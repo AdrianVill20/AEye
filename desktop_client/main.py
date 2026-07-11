@@ -1,52 +1,73 @@
 import sys
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QApplication, QMainWindow
-from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWidgets import QApplication, QMainWindow, QStackedWidget
 
 from keyboard_lock import KeyboardLock
-
-# The e-class exam page AEye displays inside its controlled window.
-# Placeholder for now — later point this at your researcher-controlled
-# test instance (e.g. "http://localhost/moodle" or your test exam URL).
-EXAM_URL = "https://example.com"
+from views import LoginView, StudentExamView, ProctorView
+from auth import authenticate
+from session import Session
 
 
-class LockdownWindow(QMainWindow):
-    """AEye's controlled exam window (student mode): fullscreen,
-    always-on-top, app-switching blocked, showing the e-class page."""
+class MainWindow(QMainWindow):
+    """AEye's single-app shell: login -> route to student or proctor
+    mode. Student mode locks down (fullscreen + keyboard hook); login
+    and proctor mode run as a normal window.
+    """
 
     def __init__(self):
         super().__init__()
         self.setWindowTitle("AEye")
+
+        self.lock = KeyboardLock()
+        self.session = None   # set once someone signs in
+
+        self.stack = QStackedWidget()
+        self.setCentralWidget(self.stack)
+
+        self.login_view = LoginView(on_login=self.handle_login)
+        self.student_view = StudentExamView()
+        self.proctor_view = ProctorView()
+
+        self.stack.addWidget(self.login_view)     # index 0
+        self.stack.addWidget(self.student_view)   # index 1
+        self.stack.addWidget(self.proctor_view)   # index 2
+
+        quit_sc = QShortcut(QKeySequence("Ctrl+Shift+Q"), self)
+        quit_sc.activated.connect(QApplication.quit)
+
+    def handle_login(self, user_id, password, role):
+        # Verify (placeholder for now), then start a session and route.
+        if not authenticate(user_id, password, role):
+            self.login_view.show_error("Please enter your ID and password.")
+            return
+
+        self.session = Session(user_id=user_id.strip(), role=role)
+
+        if role == "student":
+            self.enter_student_mode()
+        else:
+            self.enter_proctor_mode()
+
+    def enter_student_mode(self):
+        self.stack.setCurrentWidget(self.student_view)
         self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        self.lock.install()
+        self.showFullScreen()
 
-        # Embedded Chromium browser = the "controlled window".
-        # We only DISPLAY the e-class page; we don't share its login
-        # session (thesis: no session-level e-class integration).
-        self.web = QWebEngineView()
-        self.web.load(QUrl(EXAM_URL))
-        self.setCentralWidget(self.web)
-
-        # DEV-ONLY exit (Q isn't a blocked key, so it still reaches Qt).
-        quit_shortcut = QShortcut(QKeySequence("Ctrl+Shift+Q"), self)
-        quit_shortcut.activated.connect(QApplication.quit)
+    def enter_proctor_mode(self):
+        self.stack.setCurrentWidget(self.proctor_view)
+        self.showMaximized()
 
 
 def main():
-    # Recommended before creating the app when using QtWebEngine, so the
-    # embedded browser shares one OpenGL context (avoids a GL warning).
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
-
     app = QApplication(sys.argv)
 
-    # System-wide keyboard hook; removed automatically on quit.
-    lock = KeyboardLock()
-    lock.install()
-    app.aboutToQuit.connect(lock.uninstall)
+    window = MainWindow()
+    app.aboutToQuit.connect(window.lock.uninstall)
 
-    window = LockdownWindow()
-    window.showFullScreen()
+    window.show()   # start on the login screen (windowed)
     sys.exit(app.exec())
 
 
