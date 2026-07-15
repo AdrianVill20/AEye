@@ -1,7 +1,8 @@
 import cv2
 import numpy as np
 import mediapipe as mp
-import json
+import pickle
+from collections import deque
 
 mp_face_mesh = mp.solutions.face_mesh
 face_mesh = mp_face_mesh.FaceMesh(
@@ -15,24 +16,16 @@ cap = cv2.VideoCapture(0)
 
 SCREEN_W, SCREEN_H = 1280, 720
 
-CALIBRATION_POINTS = [
-    (0.1, 0.1), (0.5, 0.1), (0.9, 0.1),
-    (0.1, 0.5), (0.5, 0.5), (0.9, 0.5),
-    (0.1, 0.9), (0.5, 0.9), (0.9, 0.9),
-]
-
-# --- iris ratio landmarks ---
+# --- same landmark constants as before ---
 LEFT_IRIS = 468
 LEFT_EYE_LEFT_CORNER = 33
 LEFT_EYE_RIGHT_CORNER = 133
 LEFT_EYE_TOP = 159
 LEFT_EYE_BOTTOM = 145
 
-# --- sclera ratio landmarks ---
 LEFT_EYE_OUTLINE = [33, 7, 163, 144, 145, 153, 154, 155, 133,
                      173, 157, 158, 159, 160, 161, 246]
 
-# --- head pose landmarks + model ---
 MODEL_POINTS = np.array([
     (0.0, 0.0, 0.0),
     (0.0, -330.0, -65.0),
@@ -53,12 +46,8 @@ def get_iris_ratio(landmarks, w, h):
 
 def get_vertical_iris_ratio(landmarks, w, h):
     iris_y = landmarks[LEFT_IRIS].y
-
-    # average multiple top eyelid points for stability
-    top_y = (landmarks[159].y + landmarks[158].y + landmarks[160].y) / 3
-    # average multiple bottom eyelid points for stability
-    bottom_y = (landmarks[145].y + landmarks[144].y + landmarks[153].y) / 3
-
+    top_y = landmarks[LEFT_EYE_TOP].y
+    bottom_y = landmarks[LEFT_EYE_BOTTOM].y
     return (iris_y - top_y) / (bottom_y - top_y)
 
 
@@ -140,16 +129,20 @@ def get_head_pose(landmarks, w, h, prev_rvec, prev_tvec):
     return pitch, yaw, roll, rvec, tvec
 
 
-# --- main calibration loop ---
-collected_data = []
-current_point_index = 0
-frames_collected_for_point = 0
-FRAMES_PER_POINT = 30
+# --- load the trained model ---
+with open('gaze_model.pkl', 'rb') as f:
+    model = pickle.load(f)
+
+print("Model loaded successfully")
+
+# smoothing buffer for predicted gaze point (reduces jitter)
+gaze_x_history = deque(maxlen=5)
+gaze_y_history = deque(maxlen=5)
 
 prev_rvec, prev_tvec = None, None
-calibration_window = np.zeros((SCREEN_H, SCREEN_W, 3), dtype=np.uint8)
+gaze_window = np.zeros((SCREEN_H, SCREEN_W, 3), dtype=np.uint8)
 
-while current_point_index < len(CALIBRATION_POINTS):
+while True:
     ret, frame = cap.read()
     if not ret:
         break
@@ -160,15 +153,7 @@ while current_point_index < len(CALIBRATION_POINTS):
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     results = face_mesh.process(rgb)
 
-    calibration_window[:] = 0
-    target_x_norm, target_y_norm = CALIBRATION_POINTS[current_point_index]
-    dot_x = int(target_x_norm * SCREEN_W)
-    dot_y = int(target_y_norm * SCREEN_H)
-    cv2.circle(calibration_window, (dot_x, dot_y), 15, (0, 255, 0), -1)
-    cv2.putText(calibration_window, f"Point {current_point_index+1}/9", (30, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-    cv2.putText(calibration_window, "Look at the green dot", (30, 60),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+    gaze_window[:] = 30  # dark gray background
 
     if results.multi_face_landmarks:
         landmarks = results.multi_face_landmarks[0].landmark
@@ -181,32 +166,36 @@ while current_point_index < len(CALIBRATION_POINTS):
         )
 
         if pitch is not None:
-            collected_data.append({
-                "iris_ratio": iris_ratio,
-                "vertical_iris_ratio": vertical_iris_ratio,
-                "sclera_ratio": sclera_ratio,
-                "yaw": yaw,
-                "pitch": pitch,
-                "roll": roll,
-                "target_x": target_x_norm,
-                "target_y": target_y_norm
-            })
-            frames_collected_for_point += 1
+            features = np.array([[
+                iris_ratio, vertical_iris_ratio, sclera_ratio,
+                yaw, pitch, roll
+            ]])
 
-    cv2.imshow('Calibration', calibration_window)
+            predicted = model.predict(features)[0]
+            pred_x, pred_y = predicted[0], predicted[1]
+
+            # clip predictions to stay within screen bounds (0 to 1)
+            pred_x = np.clip(pred_x, 0, 1)
+            pred_y = np.clip(pred_y, 0, 1)
+
+            # smooth over recent frames
+            gaze_x_history.append(pred_x)
+            gaze_y_history.append(pred_y)
+            smooth_x = sum(gaze_x_history) / len(gaze_x_history)
+            smooth_y = sum(gaze_y_history) / len(gaze_y_history)
+
+            dot_x = int(smooth_x * SCREEN_W)
+            dot_y = int(smooth_y * SCREEN_H)
+
+            cv2.circle(gaze_window, (dot_x, dot_y), 20, (0, 0, 255), -1)
+            cv2.putText(gaze_window, f"Predicted: ({smooth_x:.2f}, {smooth_y:.2f})",
+                        (30, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+    cv2.imshow('Predicted Gaze', gaze_window)
     cv2.imshow('Webcam feed', frame)
-
-    if frames_collected_for_point >= FRAMES_PER_POINT:
-        current_point_index += 1
-        frames_collected_for_point = 0
 
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
 cap.release()
 cv2.destroyAllWindows()
-
-print(f"Collected {len(collected_data)} samples across {len(CALIBRATION_POINTS)} points")
-with open('calibration_data.json', 'w') as f:
-    json.dump(collected_data, f)
-print("Saved to calibration_data.json")

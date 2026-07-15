@@ -1,15 +1,14 @@
 import json
 import numpy as np
 from sklearn.linear_model import LinearRegression
+from sklearn.model_selection import train_test_split
 import pickle
 
-# load the calibration data we collected
 with open('calibration_data.json', 'r') as f:
     data = json.load(f)
 
 print(f"Loaded {len(data)} samples")
 
-# build the feature matrix (X) and target matrix (y)
 X = []
 y = []
 
@@ -30,26 +29,33 @@ for sample in data:
 X = np.array(X)
 y = np.array(y)
 
-print(f"Feature matrix shape: {X.shape}")  # should be (num_samples, 6)
-print(f"Target matrix shape: {y.shape}")   # should be (num_samples, 2)
+# split into 80% training, 20% testing - testing data is "unseen" during training
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
 
-# train the regression model
+print(f"Training on {len(X_train)} samples, testing on {len(X_test)} samples")
+
 model = LinearRegression()
-model.fit(X, y)
+model.fit(X_train, y_train)
 
-# check how well it fits the training data itself (rough sanity check)
-train_score = model.score(X, y)
-print(f"Training R2 score: {train_score:.3f}")  # closer to 1.0 is better fit
+train_score = model.score(X_train, y_train)
+test_score = model.score(X_test, y_test)
 
-# save the trained model so we can use it later without retraining
+print(f"Training R2 score: {train_score:.3f}")
+print(f"Testing R2 score:  {test_score:.3f}")
+
+# calculate average prediction error in normalized screen units
+predictions = model.predict(X_test)
+errors = np.sqrt(np.sum((predictions - y_test) ** 2, axis=1))
+print(f"Average error: {errors.mean():.3f} (normalized 0-1 screen units)")
+print(f"Worst error:   {errors.max():.3f}")
+
+# now retrain on ALL data for the final saved model (more data = better)
+final_model = LinearRegression()
+final_model.fit(X, y)
+
 with open('gaze_model.pkl', 'wb') as f:
-    pickle.dump(model, f)
+    pickle.dump(final_model, f)
 
-print("Model saved to gaze_model.pkl")
-
-# quick manual test: predict on the first sample and compare to actual target
-test_features = X[0].reshape(1, -1)
-predicted = model.predict(test_features)
-print(f"\nSample prediction check:")
-print(f"  Actual target: {y[0]}")
-print(f"  Predicted:     {predicted[0]}")
+print("\nFinal model (trained on all data) saved to gaze_model.pkl")
