@@ -18,3 +18,10 @@ dist/
 .idea/
 .DS_Store
 Thumbs.db
+
+# AEye gaze - per-user generated calibration data & trained models
+# (each tester calibrates locally; don't share one person's calibration)
+app_video/gaze/calibration_data.json
+app_video/gaze/gaze_model.pkl
+app_video/gaze/zone_data.json
+app_video/gaze/zone_model.pkl
