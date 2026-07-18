@@ -19,8 +19,8 @@ def blink(points, landarks):
     center_top = midpoint(landmarks.part(points[1]), landmarks.part(points[2]))#middle up
     center_bottom = midpoint(landmarks.part(points[5]), landmarks.part(points[4]))#middle down
 
-    h_line = cv2.line(frame, left_point, right_point,(0,255,255),2)
-    v_line = cv2.line(frame, center_top, center_bottom, (0,255,255), 2)
+    #h_line = cv2.line(frame, left_point, right_point,(0,255,255),2)
+    #v_line = cv2.line(frame, center_top, center_bottom, (0,255,255), 2)
 
     hor_line = hypot((left_point[0]-right_point[0]), (left_point[1]-right_point[1])) # to check for len
     ver_line = hypot((center_top[0]-center_bottom[0]), (center_top[1]-center_bottom[1]))
@@ -59,14 +59,40 @@ while True:
          if right_div and left_div > 5.5: #blink
              cv2.putText(frame, 'BLINKING', (50,150), font,2, (0,255,0))
       #gaze Detection
-         left_region = np.array([landmarks.part(36).x, landmarks.part(36),
-                                 landmarks.part(37).x, landmarks.part(37),
-                                 landmarks.part(38).x, landmarks.part(38),
-                                 landmarks.part(39).x, landmarks.part(39),
-                                 landmarks.part(40).x, landmarks.part(40),
-                                 landmarks.part(41).x, landmarks.part(41), np.int32]) 
+         left_region = np.array([#g1
+             (landmarks.part(36).x, landmarks.part(36).y),
+             (landmarks.part(37).x, landmarks.part(37).y),
+             (landmarks.part(38).x, landmarks.part(38).y),
+             (landmarks.part(39).x, landmarks.part(39).y),
+             (landmarks.part(40).x, landmarks.part(40).y),
+             (landmarks.part(41).x, landmarks.part(41).y)], np.int32) 
          #print(left_region) #location for left eye region
-         cv2.polylines(frame, [left_region], True, (0,255,255), 2)        
+      #   cv2.polylines(frame, [left_region], True, (0,255,0), 2)
+         h,w,_ = frame.shape #g6
+         mask = np.zeros((h,w), np.uint8) # create black screen
+         cv2.polylines(mask, [left_region], True, 255, 2)#g7
+         cv2.fillPoly(mask, [left_region], 255)#g8
+         left_eye = cv2.bitwise_and(gray,gray, mask= mask) #g9e patung2 ang frames
+         
+         min_x = min(left_region[:,0])#g2
+         max_x = max(left_region[:,0])
+         min_y = min(left_region[:,1])
+         max_y = max(left_region[:,1])
+
+         #eye = frame[min_y: max_y, min_x: max_x]#g3
+         #gray_eye = cv2.cvtColor(eye, cv2.COLOR_BGR2GRAY)#g4
+         _, threshold_eye = cv2.threshold(gray_eye, 70, 255,cv2.THRESH_BINARY)#g5
+         
+         eye = cv2.resize(eye, None, fx=5, fy=5)
+         threshold_eye = cv2.resize(threshold_eye, None, fx=5, fy=5)#g5
+         cv2.imshow('eye', eye)
+         cv2.imshow('threshold', threshold_eye)
+         cv2.imshow('mask', mask)
+         cv2.imshow('left_eye', left_eye)
+
+
+
+              
    #flipped = cv2.flip(frame,1)
    cv2.imshow("Frame", frame)
 
