@@ -91,10 +91,7 @@ while True:
          cv2.imshow('threshold', threshold_eye)
          cv2.imshow('mask', mask)
          cv2.imshow('left_eye', left_eye)
-
-
-
-              
+   
    #flipped = cv2.flip(frame,1)
    cv2.imshow("Frame", frame)
 
