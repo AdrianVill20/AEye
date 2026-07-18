@@ -25,7 +25,7 @@ def blink(points, landarks):
     hor_line = hypot((left_point[0]-right_point[0]), (left_point[1]-right_point[1])) # to check for len
     ver_line = hypot((center_top[0]-center_bottom[0]), (center_top[1]-center_bottom[1]))
 
-    print(f'vertical length:{ver_line}\n horizontal length:{hor_line}')
+    #print(f'vertical length:{ver_line}\n horizontal length:{hor_line}')
     div = hor_line/ver_line
 
     return div
@@ -58,7 +58,15 @@ while True:
       #detect blinking
          if right_div and left_div > 5.5: #blink
              cv2.putText(frame, 'BLINKING', (50,150), font,2, (0,255,0))
-      #gaze Detection         
+      #gaze Detection
+         left_region = np.array([landmarks.part(36).x, landmarks.part(36),
+                                 landmarks.part(37).x, landmarks.part(37),
+                                 landmarks.part(38).x, landmarks.part(38),
+                                 landmarks.part(39).x, landmarks.part(39),
+                                 landmarks.part(40).x, landmarks.part(40),
+                                 landmarks.part(41).x, landmarks.part(41), np.int32]) 
+         #print(left_region) #location for left eye region
+         cv2.polylines(frame, [left_region], True, (0,255,255), 2)        
    #flipped = cv2.flip(frame,1)
    cv2.imshow("Frame", frame)
 
