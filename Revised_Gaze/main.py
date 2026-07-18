@@ -79,7 +79,7 @@ def gaze_ratio(eye_marks, landmarks):
 while True:
    _, frame = cap.read()
    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) #simple ky mas makita ang lines sa gray
-
+   newframe = np.zeros((500,500,3), np.uint8)
    faces =detector(gray)
    for face in faces:
       #    print(face)
@@ -106,13 +106,16 @@ while True:
          cv2.putText(frame, str(gaze), (50,150), font, 2, (0,255,0), 2)
          if gaze < 1:
             cv2.putText(frame, "looking right", (50,100), font, 2, (0,255,0), 2)
+            newframe[:] = (0,0,255)
          elif 1< gaze < 3:
              cv2.putText(frame, "looking center", (50,100), font, 2, (0,255,0), 2)
+             newframe[:] = (255,0,0)
          else: 
              cv2.putText(frame, "looking left", (50,100), font, 2, (0,255,0), 2)
+             newframe[:] = (0,255,0)
          # cv2.putText(frame, str(left_side_white), (50,100), font, 2, (0,255,0), 2)
          # cv2.putText(frame, str(right_side_white), (50,150), font, 2, (0,255,0), 2)
-         
+
          # eye = cv2.resize(gray_eye, None, fx=5, fy=5)
          # threshold_eye = cv2.resize(threshold_eye, None, fx=5, fy=5)
          # cv2.imshow('threshold', threshold_eye)
@@ -120,7 +123,7 @@ while True:
          # cv2.imshow('right_threshold', right_threshold) 
    #flipped = cv2.flip(frame,1)
    cv2.imshow("Frame", frame)
-
+   cv2.imshow("color", newframe)
    key = cv2.waitKey(1)
    if key == 27:
       break
