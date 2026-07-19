@@ -1,15 +1,3 @@
-"""
-Head pose estimation, refactored into a reusable class.
-
-Usage:
-    estimator = HeadPoseEstimator()
-    result = estimator.get_pose(frame)   # just get the numbers, no display
-    # result = {"direction": "Forward", "x": ..., "y": ..., "z": ..., "nose_2d": (...), "nose_end_2d": (...)}
-
-    # or run the standalone demo window:
-    estimator.run_demo()
-"""
-
 import cv2
 import mediapipe as mp
 import numpy as np
