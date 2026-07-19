@@ -38,7 +38,7 @@ while True:
          h_line = cv2.line(frame, left_point, right_point,(0,255,255),2)
          v_line = cv2.line(frame, center_top, center_bottom, (0,255,255), 2)
 
-         hor_line = hypot((left_point[0]-right_point[0]), (left_point[1]-right_point[1])) # to check for len
+         hor_line = hypot((left_point[0]-right_point[0]), (left_point[1]-right_point[1])) # to check for len # computes sqrt(dx² + dy²) — the straight-line (Euclidean) distance between two points.
          ver_line = hypot((center_top[0]-center_bottom[0]), (center_top[1]-center_bottom[1]))
 
          print(f'vertical length:{ver_line}\n horizontal length:{hor_line}')
