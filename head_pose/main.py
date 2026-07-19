@@ -3,7 +3,6 @@ import mediapipe as mp
 import numpy as np
 import time
 
-
 class HeadPoseEstimator:
     LANDMARK_IDS = [33, 263, 1, 61, 291, 199]
 
@@ -103,7 +102,6 @@ class HeadPoseEstimator:
         }
 
     def draw_overlay(self, frame, pose):
-        """Draw the direction line + text onto a frame, given a get_pose() result."""
         if pose is None:
             return frame
         cv2.line(frame, pose["nose_2d"], pose["nose_end_2d"], (255, 0, 0), 3)
@@ -121,7 +119,6 @@ class HeadPoseEstimator:
         return frame
 
     def run_demo(self, camera_index=0):
-        """Standalone webcam demo window, same behavior as the original script."""
         cap = cv2.VideoCapture(camera_index)
         while cap.isOpened():
             success, frame = cap.read()

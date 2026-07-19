@@ -6,12 +6,11 @@ from math import hypot
 cap = cv2.VideoCapture(0)
 detector = dlib.get_frontal_face_detector() #to detect face
 predictor = dlib.shape_predictor('shape_predictor_68_face_landmarks.dat')
+font = cv2.FONT_HERSHEY_COMPLEX
 
 def midpoint(p1,p2):
     
     return (int((p1.x+p2.x)/2),int((p1.y+p2.y)/2))
-
-font = cv2.FONT_HERSHEY_COMPLEX
 
 def blink(points, landarks):
     left_point = (landmarks.part(points[0]).x, landmarks.part(points[0]).y)#left eye left
