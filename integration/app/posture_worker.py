@@ -1,12 +1,32 @@
-import sys
-from pathlib import Path
 import cv2
 import mediapipe as mp
+import time
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
-POSTURE_DIR = Path(__file__).resolve().parent.parent / 'posture'
-sys.path.append(str(POSTURE_DIR))
-from pose_common import create_pose_landmarker, extract_posture, POSE_CONNECTIONS
+
+MP_DRAWING = mp.solutions.drawing_utils
+MP_POSE = mp.solutions.pose
+POSE_CONNECTIONS = MP_POSE.POSE_CONNECTIONS
+
+
+def create_pose_landmarker():
+    return MP_POSE.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+
+
+def extract_posture(result):
+    if not result.pose_landmarks:
+        return None
+    lm = result.pose_landmarks.landmark
+    l_shoulder = lm[MP_POSE.PoseLandmark.LEFT_SHOULDER.value]
+    r_shoulder = lm[MP_POSE.PoseLandmark.RIGHT_SHOULDER.value]
+    l_wrist = lm[MP_POSE.PoseLandmark.LEFT_WRIST.value]
+    r_wrist = lm[MP_POSE.PoseLandmark.RIGHT_WRIST.value]
+    return {
+        'Left shoulder': f'{l_shoulder.x:.2f}, {l_shoulder.y:.2f}',
+        'Right shoulder': f'{r_shoulder.x:.2f}, {r_shoulder.y:.2f}',
+        'Left wrist': f'{l_wrist.x:.2f}, {l_wrist.y:.2f}',
+        'Right wrist': f'{r_wrist.x:.2f}, {r_wrist.y:.2f}',
+    }
 
 class SideCameraWorker(QThread):
     frame_ready = Signal(QImage)
@@ -24,43 +44,49 @@ class SideCameraWorker(QThread):
     def _blank_stats():
         return {'Left shoulder': '--', 'Right shoulder': '--', 'Left wrist': '--', 'Right wrist': '--', 'Landmarks detected (/33)': '--'}
 
-    @staticmethod
-    def _draw_skeleton(frame, lm, w, h):
-        pts = [(int(p.x * w), int(p.y * h)) for p in lm]
-        for a, b in POSE_CONNECTIONS:
-            cv2.line(frame, pts[a], pts[b], (0, 0, 0), 1)
-        for x, y in pts:
-            cv2.circle(frame, (x, y), 3, (245, 66, 230), -1)
-
     def run(self):
         self._running = True
-        landmarker = create_pose_landmarker()
+        pose = create_pose_landmarker()
         cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
         if not cap.isOpened():
             stats = self._blank_stats()
             stats['Left shoulder'] = f'Camera {self.camera_index} unavailable'
             self.stats_ready.emit(stats)
+            pose.close()
             return
-        timestamp_ms = 0
+        upd_interval = 0.5
+        last_upd_time = 0.0
+        display_stats = self._blank_stats()
         while self._running:
             ret, frame = cap.read()
             if not ret:
                 continue
-            h, w = frame.shape[:2]
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-            result = landmarker.detect_for_video(mp_image, timestamp_ms)
-            timestamp_ms += 33
+            rgb.flags.writeable = False
+            result = pose.process(rgb)
+            rgb.flags.writeable = True
             stats = self._blank_stats()
             if result.pose_landmarks:
-                lm = result.pose_landmarks[0]
-                self._draw_skeleton(frame, lm, w, h)
-                stats['Landmarks detected (/33)'] = str(len(lm))
-                coords = extract_posture(result)
-                if coords is not None:
-                    stats.update(coords)
+                MP_DRAWING.draw_landmarks(
+                    frame,
+                    result.pose_landmarks,
+                    POSE_CONNECTIONS,
+                    MP_DRAWING.DrawingSpec(color=(245, 66, 230), thickness=1, circle_radius=3),
+                    MP_DRAWING.DrawingSpec(color=(255, 255, 255), thickness=1, circle_radius=2),
+                )
+                stats['Landmarks detected (/33)'] = str(len(result.pose_landmarks.landmark))
+
+                curr_time = time.time()
+                if curr_time - last_upd_time > upd_interval:
+                    last_upd_time = curr_time
+                    coords = extract_posture(result)
+                    if coords is not None:
+                        display_stats.update(coords)
+                stats.update(display_stats)
             rgb_out = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            h, w = frame.shape[:2]
             qimg = QImage(rgb_out.data, w, h, 3 * w, QImage.Format_RGB888).copy()
             self.frame_ready.emit(qimg)
             self.stats_ready.emit(stats)
         cap.release()
+        pose.close()
