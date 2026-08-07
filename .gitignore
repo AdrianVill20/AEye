@@ -25,3 +25,6 @@ app_video/gaze/calibration_data.json
 app_video/gaze/gaze_model.pkl
 app_video/gaze/zone_data.json
 app_video/gaze/zone_model.pkl
+
+# AEye - large dlib face-landmark model (download locally; too big for git)
+shape_predictor_68_face_landmarks.dat
