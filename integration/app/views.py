@@ -179,7 +179,9 @@ class AnalysisDashboard(QTabWidget):
 
     def start_posture(self):
         if self.side_worker is None:
-            self.side_worker = SideCameraWorker(camera_index=0)
+            current_user = self.window().session.user_id if self.window().session else "test_user"
+            
+            self.side_worker = SideCameraWorker(camera_index=0, session_user_id=current_user)
             self.side_worker.frame_ready.connect(self._show_posture_frame)
             self.side_worker.stats_ready.connect(self.posture_tab.update_stats)
             self.side_worker.start()
