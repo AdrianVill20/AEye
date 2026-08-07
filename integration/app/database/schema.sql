@@ -18,3 +18,14 @@ CREATE TABLE IF NOT EXISTS posture_logs (
     created_at        TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_captured_at (captured_at)
 ) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS gaze_logs (
+    id                BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    session_user_id   VARCHAR(64)   NULL,
+    captured_at       DATETIME(3)   NOT NULL,
+    direction         ENUM('left', 'center', 'right') NOT NULL,
+    gaze_ratio        FLOAT         NULL,
+    is_blinking       TINYINT(1)    NOT NULL DEFAULT 0,
+    created_at        TIMESTAMP     DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_captured_at (captured_at)
+) ENGINE=InnoDB;
