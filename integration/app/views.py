@@ -163,7 +163,9 @@ class AnalysisDashboard(QTabWidget):
 
     def start_gaze(self):
         if self.gaze_worker is None:
-            self.gaze_worker = GazeWorker(camera_index=0)
+            current_user = self.window().session.user_id if self.window().session else "test_user"
+            
+            self.gaze_worker = GazeWorker(camera_index=0, session_user_id=current_user)
             self.gaze_worker.frame_ready.connect(self._show_gaze_frame)
             self.gaze_worker.stats_ready.connect(self.eye_tab.update_stats)
             self.gaze_worker.start()
