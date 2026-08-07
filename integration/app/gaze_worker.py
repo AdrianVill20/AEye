@@ -40,6 +40,7 @@ class GazeWorker(QThread):
             return
         while self._running:
             ret, frame = cap.read()
+            frame = cv2.flip(frame, 1)
             if not ret:
                 continue
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -51,12 +52,12 @@ class GazeWorker(QThread):
                 right_div = blink(RIGHT_EYE, landmarks)
                 blinking = right_div and left_div > 5.5
                 gaze = (gaze_ratio(RIGHT_EYE, landmarks, frame, gray) + gaze_ratio(LEFT_EYE, landmarks, frame, gray)) / 2
-                if gaze < 1:
-                    direction, color = ('looking right', (0, 0, 255))
-                elif 1 < gaze < 3:
+                if gaze < 0.45:
+                    direction, color = ('looking left', (0, 0, 255))
+                elif 0.45 < gaze < 2:
                     direction, color = ('looking center', (255, 0, 0))
                 else:
-                    direction, color = ('looking left', (0, 255, 0))
+                    direction, color = ('looking right', (0, 255, 0))
                 h, w = frame.shape[:2]
                 cv2.rectangle(frame, (0, 0), (w, 40), color, -1)
                 cv2.putText(frame, direction, (10, 28), FONT, 0.8, (255, 255, 255), 2)
