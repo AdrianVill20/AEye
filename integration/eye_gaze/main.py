@@ -75,6 +75,51 @@ def gaze_ratio(eye_marks, landmarks):
       gaze_ratio = left_side_white/right_side_white #4
 
     return gaze_ratio
+def vertical_gaze_ratio(eye_marks, landmarks):
+    eye_region = np.array([
+             (landmarks.part(eye_marks[0]).x, landmarks.part(eye_marks[0]).y),
+             (landmarks.part(eye_marks[1]).x, landmarks.part(eye_marks[1]).y),
+             (landmarks.part(eye_marks[2]).x, landmarks.part(eye_marks[2]).y),
+             (landmarks.part(eye_marks[3]).x, landmarks.part(eye_marks[3]).y),
+             (landmarks.part(eye_marks[4]).x, landmarks.part(eye_marks[4]).y),
+             (landmarks.part(eye_marks[5]).x, landmarks.part(eye_marks[5]).y)], np.int32)
+
+    h, w, _ = frame.shape
+    mask = np.zeros((h, w), np.uint8)
+    cv2.polylines(mask, [eye_region], True, 255, 2)
+    cv2.fillPoly(mask, [eye_region], 255)
+    eyes = cv2.bitwise_and(gray, gray, mask=mask)
+
+    min_x = min(eye_region[:, 0])
+    max_x = max(eye_region[:, 0])
+    min_y = min(eye_region[:, 1])
+    max_y = max(eye_region[:, 1])
+
+    gray_eye = eyes[min_y: max_y, min_x: max_x]
+    _, threshold_eye = cv2.threshold(gray_eye, 70, 255, cv2.THRESH_BINARY)
+
+    height, width = threshold_eye.shape
+
+    # crop off the top ~30% (eyelid crease/eyelash zone) before splitting
+    crop = int(height * 0.3)
+    trimmed = threshold_eye[crop:height, 0:width]
+    trimmed_height, _ = trimmed.shape
+
+    top_threshold = trimmed[0:int(trimmed_height/2), 0:width]
+    top_white = cv2.countNonZero(top_threshold)
+    bottom_threshold = trimmed[int(trimmed_height/2):trimmed_height, 0:width]
+    bottom_white = cv2.countNonZero(bottom_threshold)
+
+    print(f"top_white: {top_white}, bottom_white: {bottom_white}, ratio: {top_white/bottom_white if bottom_white else 'inf'}")
+
+    if top_white == 0:
+        v_ratio = 1
+    elif bottom_white == 0:
+        v_ratio = 0
+    else:
+        v_ratio = top_white / bottom_white
+
+    return v_ratio
 
 while True:
    _, frame = cap.read()
@@ -104,15 +149,31 @@ while True:
          gaze = (gaze_ratio_right + gaze_ratio_left)/2
 
          cv2.putText(frame, str(gaze), (50,150), font, 2, (0,255,0), 2)
-         if gaze < 1:
+         vgaze_left = vertical_gaze_ratio([36,37,38,39,40,41], landmarks)
+         vgaze_right = vertical_gaze_ratio([42,43,44,45,46,47], landmarks)
+         vgaze = (vgaze_left + vgaze_right) / 2
+
+         cv2.putText(frame, str(vgaze), (50, 200), font, 2, (0, 255, 0), 2)
+         if vgaze < 0.45:
+             cv2.putText(frame, "looking up", (50, 250), font, 2, (0, 255, 0), 2)
+             print('up')
+         elif 0.45 < vgaze < 0.75:
+             cv2.putText(frame, "looking straight", (50, 250), font, 2, (0, 255, 0), 2)
+             print('straight')
+         else:
+             cv2.putText(frame, "looking down", (50, 250), font, 2, (0, 255, 0), 2)
+             print('down')
+            #eyegaze
+         if gaze < 0.45:
             cv2.putText(frame, "looking right", (50,100), font, 2, (0,255,0), 2)
             newframe[:] = (0,0,255)
-         elif 1< gaze < 3:
+         elif 0.45< gaze < 2:
              cv2.putText(frame, "looking center", (50,100), font, 2, (0,255,0), 2)
              newframe[:] = (255,0,0)
          else: 
              cv2.putText(frame, "looking left", (50,100), font, 2, (0,255,0), 2)
              newframe[:] = (0,255,0)
+    
          # cv2.putText(frame, str(left_side_white), (50,100), font, 2, (0,255,0), 2)
          # cv2.putText(frame, str(right_side_white), (50,150), font, 2, (0,255,0), 2)
 
