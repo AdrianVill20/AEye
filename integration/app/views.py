@@ -4,7 +4,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QPixmap
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QFrame, QComboBox, QMdiArea, QMdiSubWindow
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QFrame, QComboBox, QMdiArea, QMdiSubWindow, QSizePolicy
 REPO_ROOT = Path(__file__).resolve().parent.parent
 from gaze_worker import GazeWorker
 from posture_worker import SideCameraWorker
@@ -64,7 +64,7 @@ class AnalysisTab(QWidget):
         root = QHBoxLayout(self)
         self.feed_area = QFrame()
         self.feed_area.setFrameShape(QFrame.Shape.Box)
-        self.feed_area.setMinimumSize(640, 480)
+        self.feed_area.setMinimumSize(320, 240)
         self.feed_area.setStyleSheet('background-color: #111; color: #ddd;')
         feed_layout = QVBoxLayout(self.feed_area)
         self.placeholder = QLabel(f'📷  {camera_desc}\n\nLive camera feed + ML overlay will be embedded here.\nProvided by: {owner}')
@@ -175,9 +175,12 @@ class CameraSection(QWidget):
         # Video feed area
         self.video = QLabel('No feed yet')
         self.video.setAlignment(Qt.AlignCenter)
-        self.video.setMinimumSize(400, 300)
+        self.video.setMinimumSize(280, 210)
+        # Ignore the pixmap's own size so the feed fills the space and resizes
+        # with the window instead of shrinking frame-by-frame.
+        self.video.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         self.video.setStyleSheet('background-color: #111; color: #ddd;')
-        layout.addWidget(self.video)
+        layout.addWidget(self.video, stretch=1)
 
         # Small status line (landmark count, or "Camera N unavailable")
         self.status = QLabel('')
@@ -227,21 +230,18 @@ class CameraSection(QWidget):
 
 
 class PostureTab(QWidget):
-    """The Posture tab: two camera sections side by side, each with its own
-    camera-index choice and Start/Stop."""
+    """Individual posture test: one camera running posture detection, so posture
+    can be tested on its own (separate from the combined Head + Posture view)."""
 
     def __init__(self):
         super().__init__()
-        layout = QHBoxLayout(self)
-        self.camera1 = CameraSection('Camera 1', SideCameraWorker, default_index=0)
-        self.camera2 = CameraSection('Camera 2', SideCameraWorker, default_index=1)
-        layout.addWidget(self.camera1)
-        layout.addWidget(self.camera2)
+        layout = QVBoxLayout(self)
+        self.camera = CameraSection('Posture Camera', SideCameraWorker, default_index=0)
+        layout.addWidget(self.camera)
 
     def stop_all(self):
-        # Called when the app closes, to shut both cameras down cleanly.
-        self.camera1.stop()
-        self.camera2.stop()
+        # Called when the app closes, to shut the camera down cleanly.
+        self.camera.stop()
 
 
 class GazePostureTab(QWidget):
@@ -312,11 +312,13 @@ class AnalysisDashboard(QWidget):
         super().__init__()
         self.eye_tab = AnalysisTab('Eye Tracking', 'Front camera — dlib gaze (Revised_Gaze)', ['Direction', 'Gaze ratio', 'Blink'], 'Demetillo')
         self.eye_video = QLabel(alignment=Qt.AlignCenter)
+        self.eye_video.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         self.eye_tab.set_feed_widget(self.eye_video)
         self.eye_tab.enable_controls(self.start_gaze, self.stop_gaze)
         self.gaze_worker = None
         self.head_tab = AnalysisTab('Head Pose', 'Front camera — MediaPipe face mesh', ['Direction', 'Yaw', 'Pitch', 'Roll', 'Landmarks detected (/478)'], 'Demetillo')
         self.head_video = QLabel(alignment=Qt.AlignCenter)
+        self.head_video.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         self.head_tab.set_feed_widget(self.head_video)
         self.head_tab.enable_controls(self.start_headpose, self.stop_headpose)
         self.head_worker = None
@@ -330,8 +332,8 @@ class AnalysisDashboard(QWidget):
         view_list = [
             ('Eye Tracking', self.eye_tab),
             ('Head Pose', self.head_tab),
+            ('Head + Posture', self.gaze_posture_tab),
             ('Posture', self.posture_tab),
-            ('Head + Gaze', self.gaze_posture_tab),
             ('Web', self.web_tab),
         ]
 
@@ -343,6 +345,7 @@ class AnalysisDashboard(QWidget):
             sub.setWidget(widget)
             sub.setWindowTitle(name)
             self.mdi.addSubWindow(sub)
+            sub.hide()              # start closed; open on demand via its button
             self.windows[name] = sub
 
             open_btn = QPushButton(name)
@@ -363,22 +366,18 @@ class AnalysisDashboard(QWidget):
         layout = QVBoxLayout(self)
         layout.addLayout(toolbar)
         layout.addWidget(self.mdi)
-        self._tiled_once = False   # tile only once, the first time we're shown
 
     def _open_window(self, name):
-        # Reopen (or focus) a view. Closing only hides the sub-window, so it and
-        # its state are still here — we just show it again and bring it to front.
+        # Open (or focus) a view, sized to ~80% of the current area so it fits
+        # whatever screen size you're on. Closing only hides it, so its state is
+        # preserved and we just show it again.
         sub = self.windows[name]
+        area = self.mdi.size()
+        w, h = int(area.width() * 0.8), int(area.height() * 0.8)
+        sub.resize(w, h)
+        sub.move((area.width() - w) // 2, (area.height() - h) // 2)   # center it
         sub.show()
         self.mdi.setActiveSubWindow(sub)
-
-    def showEvent(self, event):
-        # Arrange the sub-windows in a grid the first time the dashboard shows
-        # (we can't tile earlier because the area has no size yet).
-        super().showEvent(event)
-        if not self._tiled_once:
-            self._tiled_once = True
-            self.mdi.tileSubWindows()
 
     def start_gaze(self):
         if self.gaze_worker is None:

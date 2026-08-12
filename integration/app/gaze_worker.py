@@ -1,4 +1,5 @@
 import sys
+import time
 from pathlib import Path
 import cv2
 import dlib
@@ -16,9 +17,10 @@ class GazeWorker(QThread):
     frame_ready = Signal(QImage)
     stats_ready = Signal(dict)
 
-    def __init__(self, camera_index=0, parent=None):
+    def __init__(self, camera_index=0, session_user_id=None, parent=None):
         super().__init__(parent)
         self.camera_index = camera_index
+        self.session_user_id = session_user_id   # accepted so callers can pass it
         self._running = False
         self.detector = dlib.get_frontal_face_detector()
         self.predictor = dlib.shape_predictor(str(PREDICTOR_PATH))
@@ -26,13 +28,24 @@ class GazeWorker(QThread):
     def stop(self):
         self._running = False
 
+    def _open_camera(self):
+        # A webcam can take a moment to be released after a previous Stop, so try
+        # a few times before giving up (fixes "can't start again after stop").
+        for _ in range(5):
+            cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
+            if cap.isOpened():
+                return cap
+            cap.release()
+            time.sleep(0.3)
+        return cap
+
     @staticmethod
     def _blank_stats():
         return {'Direction': '--', 'Gaze ratio': '--', 'Blink': '--'}
 
     def run(self):
         self._running = True
-        cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
+        cap = self._open_camera()   # retries briefly; camera can be slow to free
         if not cap.isOpened():
             stats = self._blank_stats()
             stats['Direction'] = f'Camera {self.camera_index} unavailable'

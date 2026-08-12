@@ -32,13 +32,25 @@ class SideCameraWorker(QThread):
     frame_ready = Signal(QImage)
     stats_ready = Signal(dict)
 
-    def __init__(self, camera_index=1, parent=None):
+    def __init__(self, camera_index=1, session_user_id=None, parent=None):
         super().__init__(parent)
         self.camera_index = camera_index
+        self.session_user_id = session_user_id   # accepted so CameraSection can pass it
         self._running = False
 
     def stop(self):
         self._running = False
+
+    def _open_camera(self):
+        # A webcam can take a moment to be released after a previous Stop, so try
+        # a few times before giving up (fixes "can't start again after stop").
+        for _ in range(5):
+            cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
+            if cap.isOpened():
+                return cap
+            cap.release()
+            time.sleep(0.3)
+        return cap
 
     @staticmethod
     def _blank_stats():
@@ -47,7 +59,7 @@ class SideCameraWorker(QThread):
     def run(self):
         self._running = True
         pose = create_pose_landmarker()
-        cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
+        cap = self._open_camera()   # retries briefly; camera can be slow to free
         if not cap.isOpened():
             stats = self._blank_stats()
             stats['Left shoulder'] = f'Camera {self.camera_index} unavailable'
