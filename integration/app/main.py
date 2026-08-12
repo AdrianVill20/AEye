@@ -58,6 +58,7 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    QApplication.setAttribute(Qt.AA_ShareOpenGLContexts)   # required by Qt WebEngine
     app = QApplication(sys.argv)
     window = MainWindow()
     app.aboutToQuit.connect(window.lock.uninstall)         # remove hook on exit

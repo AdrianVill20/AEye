@@ -1,11 +1,9 @@
 import sys
-import datetime
 from pathlib import Path
 import cv2
 import dlib
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
-from gaze_logger import GazeLogWriter
 REVISED_DIR = Path(__file__).resolve().parent.parent / 'eye_gaze'
 sys.path.append(str(REVISED_DIR))
 from gaze_core import blink, gaze_ratio
@@ -18,19 +16,15 @@ class GazeWorker(QThread):
     frame_ready = Signal(QImage)
     stats_ready = Signal(dict)
 
-    def __init__(self, camera_index=0, session_user_id=None, parent=None):
+    def __init__(self, camera_index=0, parent=None):
         super().__init__(parent)
         self.camera_index = camera_index
-        self.session_user_id = session_user_id
         self._running = False
         self.detector = dlib.get_frontal_face_detector()
         self.predictor = dlib.shape_predictor(str(PREDICTOR_PATH))
-        self.log_writer = GazeLogWriter()
-        self.log_writer.start()
 
     def stop(self):
         self._running = False
-        self.log_writer.stop()
 
     @staticmethod
     def _blank_stats():
@@ -46,7 +40,6 @@ class GazeWorker(QThread):
             return
         while self._running:
             ret, frame = cap.read()
-            frame = cv2.flip(frame, 1)
             if not ret:
                 continue
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -58,12 +51,13 @@ class GazeWorker(QThread):
                 right_div = blink(RIGHT_EYE, landmarks)
                 blinking = right_div and left_div > 5.5
                 gaze = (gaze_ratio(RIGHT_EYE, landmarks, frame, gray) + gaze_ratio(LEFT_EYE, landmarks, frame, gray)) / 2
-                if gaze < 0.45:
-                    direction, color, db_direction = ('looking left', (0, 0, 255), 'left')
-                elif 0.45 < gaze < 2:
-                    direction, color, db_direction = ('looking center', (255, 0, 0), 'center')
+                if gaze < 1:
+                    direction, color = ('looking right', (0, 0, 255))
+                    
+                elif 1 < gaze < 3:
+                    direction, color = ('looking center', (255, 0, 0))
                 else:
-                    direction, color, db_direction = ('looking right', (0, 255, 0), 'right')
+                    direction, color = ('looking left', (0, 255, 0))
                 h, w = frame.shape[:2]
                 cv2.rectangle(frame, (0, 0), (w, 40), color, -1)
                 cv2.putText(frame, direction, (10, 28), FONT, 0.8, (255, 255, 255), 2)
@@ -72,14 +66,6 @@ class GazeWorker(QThread):
                 stats['Direction'] = direction
                 stats['Gaze ratio'] = f'{gaze:.2f}'
                 stats['Blink'] = 'BLINKING' if blinking else 'open'
-
-                self.log_writer.enqueue((
-                    self.session_user_id,
-                    datetime.datetime.now(),
-                    db_direction,
-                    float(gaze),
-                    bool(blinking),
-                ))
                 break
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             h, w = rgb.shape[:2]

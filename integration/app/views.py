@@ -1,9 +1,10 @@
 import sys
 import subprocess
 from pathlib import Path
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QTabWidget, QFrame
+from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QFrame, QComboBox, QMdiArea, QMdiSubWindow
 REPO_ROOT = Path(__file__).resolve().parent.parent
 from gaze_worker import GazeWorker
 from posture_worker import SideCameraWorker
@@ -138,7 +139,174 @@ class AnalysisTab(QWidget):
             self._proc.terminate()
         self._proc = None
 
-class AnalysisDashboard(QTabWidget):
+class CameraSection(QWidget):
+    """One camera view for the Posture tab.
+
+    It has a dropdown to choose which camera index to use, a Start/Stop
+    button, and the live posture feed. Each section runs its own
+    SideCameraWorker, so the two sections are fully independent.
+    """
+
+    def __init__(self, title, worker_class, default_index=0):
+        super().__init__()
+        self.worker_class = worker_class   # GazeWorker or SideCameraWorker
+        self.worker = None                 # the running worker, created on Start
+
+        layout = QVBoxLayout(self)
+
+        # Title (e.g. "Camera 1")
+        heading = QLabel(title)
+        heading.setStyleSheet('font-weight: bold; font-size: 15px;')
+        heading.setAlignment(Qt.AlignCenter)
+        layout.addWidget(heading)
+
+        # Controls row: "Camera index:" + dropdown + Start/Stop button
+        controls = QHBoxLayout()
+        controls.addWidget(QLabel('Camera index:'))
+        self.index_box = QComboBox()
+        self.index_box.addItems(['0', '1', '2', '3'])   # which webcam to open
+        self.index_box.setCurrentText(str(default_index))
+        controls.addWidget(self.index_box)
+        self.button = QPushButton('Start')
+        self.button.clicked.connect(self._toggle)
+        controls.addWidget(self.button)
+        layout.addLayout(controls)
+
+        # Video feed area
+        self.video = QLabel('No feed yet')
+        self.video.setAlignment(Qt.AlignCenter)
+        self.video.setMinimumSize(400, 300)
+        self.video.setStyleSheet('background-color: #111; color: #ddd;')
+        layout.addWidget(self.video)
+
+        # Small status line (landmark count, or "Camera N unavailable")
+        self.status = QLabel('')
+        self.status.setAlignment(Qt.AlignCenter)
+        self.status.setStyleSheet('color: gray;')
+        layout.addWidget(self.status)
+
+    def _toggle(self):
+        # Start if stopped, stop if running.
+        if self.worker is None:
+            self.start()
+        else:
+            self.stop()
+
+    def start(self):
+        camera_index = int(self.index_box.currentText())   # read the dropdown
+        session = self.window().session                    # who is logged in
+        user_id = session.user_id if session else 'test_user'
+
+        self.worker = self.worker_class(camera_index=camera_index, session_user_id=user_id)
+        self.worker.frame_ready.connect(self._show_frame)
+        self.worker.stats_ready.connect(self._show_status)
+        self.worker.start()
+
+        self.index_box.setEnabled(False)   # can't change camera while running
+        self.button.setText('Stop')
+
+    def stop(self):
+        if self.worker is not None:
+            self.worker.stop()
+            self.worker.wait()
+            self.worker = None
+        self.index_box.setEnabled(True)
+        self.button.setText('Start')
+
+    def _show_frame(self, qimg):
+        # Scale the frame to fit the label, keeping aspect ratio.
+        pixmap = QPixmap.fromImage(qimg)
+        self.video.setPixmap(pixmap.scaled(self.video.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+    def _show_status(self, stats):
+        # Show every stat the worker sends, one per line. Works for both gaze
+        # stats (Direction/Gaze ratio/Blink) and posture stats, and also shows
+        # the "Camera N unavailable" message the worker sends when it can't open.
+        lines = [f'{field}: {value}' for field, value in stats.items()]
+        self.status.setText('\n'.join(lines))
+
+
+class PostureTab(QWidget):
+    """The Posture tab: two camera sections side by side, each with its own
+    camera-index choice and Start/Stop."""
+
+    def __init__(self):
+        super().__init__()
+        layout = QHBoxLayout(self)
+        self.camera1 = CameraSection('Camera 1', SideCameraWorker, default_index=0)
+        self.camera2 = CameraSection('Camera 2', SideCameraWorker, default_index=1)
+        layout.addWidget(self.camera1)
+        layout.addWidget(self.camera2)
+
+    def stop_all(self):
+        # Called when the app closes, to shut both cameras down cleanly.
+        self.camera1.stop()
+        self.camera2.stop()
+
+
+class GazePostureTab(QWidget):
+    """Combined tab: eye gaze on camera 1, posture on camera 2.
+
+    Reuses the same CameraSection widget as the Posture tab, just with a
+    different worker on each side (GazeWorker vs SideCameraWorker).
+    """
+
+    def __init__(self):
+        super().__init__()
+        layout = QHBoxLayout(self)
+        self.camera1 = CameraSection('Eye Gaze — Camera 1', GazeWorker, default_index=0)
+        self.camera2 = CameraSection('Posture — Camera 2', SideCameraWorker, default_index=1)
+        layout.addWidget(self.camera1)
+        layout.addWidget(self.camera2)
+
+    def stop_all(self):
+        self.camera1.stop()
+        self.camera2.stop()
+
+
+class WebTab(QWidget):
+    """A simple in-app web browser: type a URL, press Go (or Enter), see the page."""
+
+    def __init__(self):
+        super().__init__()
+        layout = QVBoxLayout(self)
+
+        # Address bar: URL text field + Go button
+        bar = QHBoxLayout()
+        self.url_input = QLineEdit()
+        self.url_input.setPlaceholderText('Enter a URL, e.g. https://www.google.com')
+        self.url_input.returnPressed.connect(self._go)   # Enter loads the page
+        go_btn = QPushButton('Go')
+        go_btn.clicked.connect(self._go)
+        bar.addWidget(self.url_input)
+        bar.addWidget(go_btn)
+        layout.addLayout(bar)
+
+        # The actual browser (Chromium, via Qt WebEngine)
+        self.browser = QWebEngineView()
+        self.browser.setUrl(QUrl('https://www.google.com'))   # starting page
+        layout.addWidget(self.browser)
+
+    def _go(self):
+        url = self.url_input.text().strip()
+        if not url:
+            return
+        # If the user didn't type http:// or https://, assume https://.
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        self.browser.setUrl(QUrl(url))
+
+
+class ViewWindow(QMdiSubWindow):
+    """An MDI sub-window that hides instead of closing, so the toolbar's
+    buttons can reopen it later. (A normal close would remove it for good.)"""
+
+    def closeEvent(self, event):
+        event.ignore()   # don't actually close...
+        self.hide()      # ...just hide it, so show() can bring it back
+
+
+class AnalysisDashboard(QWidget):
 
     def __init__(self):
         super().__init__()
@@ -152,14 +320,65 @@ class AnalysisDashboard(QTabWidget):
         self.head_tab.set_feed_widget(self.head_video)
         self.head_tab.enable_controls(self.start_headpose, self.stop_headpose)
         self.head_worker = None
-        self.posture_tab = AnalysisTab('Posture', 'Side camera — MediaPipe pose', ['Left shoulder', 'Right shoulder', 'Left wrist', 'Right wrist', 'Landmarks detected (/33)'], 'Ybañez')
-        self.posture_video = QLabel(alignment=Qt.AlignCenter)
-        self.posture_tab.set_feed_widget(self.posture_video)
-        self.posture_tab.enable_controls(self.start_posture, self.stop_posture)
-        self.side_worker = None
-        self.addTab(self.eye_tab, 'Eye Tracking')
-        self.addTab(self.head_tab, 'Head Pose')
-        self.addTab(self.posture_tab, 'Posture')
+        self.posture_tab = PostureTab()
+        self.gaze_posture_tab = GazePostureTab()
+        self.web_tab = WebTab()
+        # --- MDI area: each analysis view is its own movable sub-window ---
+        self.mdi = QMdiArea()
+
+        # Every view, in the order its "open" button appears in the toolbar.
+        view_list = [
+            ('Eye Tracking', self.eye_tab),
+            ('Head Pose', self.head_tab),
+            ('Posture', self.posture_tab),
+            ('Head + Gaze', self.gaze_posture_tab),
+            ('Web', self.web_tab),
+        ]
+
+        # One sub-window per view, plus one button that (re)opens that view.
+        self.windows = {}          # name -> its sub-window, so we can reopen it
+        toolbar = QHBoxLayout()
+        for name, widget in view_list:
+            sub = ViewWindow()      # closing only hides it, so it can come back
+            sub.setWidget(widget)
+            sub.setWindowTitle(name)
+            self.mdi.addSubWindow(sub)
+            self.windows[name] = sub
+
+            open_btn = QPushButton(name)
+            # n=name gives each button its own name (needed inside a loop).
+            open_btn.clicked.connect(lambda checked=False, n=name: self._open_window(n))
+            toolbar.addWidget(open_btn)
+
+        # Arrange buttons, pushed to the right.
+        toolbar.addStretch()
+        tile_btn = QPushButton('Tile')
+        tile_btn.clicked.connect(self.mdi.tileSubWindows)
+        cascade_btn = QPushButton('Cascade')
+        cascade_btn.clicked.connect(self.mdi.cascadeSubWindows)
+        toolbar.addWidget(tile_btn)
+        toolbar.addWidget(cascade_btn)
+
+        # Toolbar on top, MDI area filling the rest.
+        layout = QVBoxLayout(self)
+        layout.addLayout(toolbar)
+        layout.addWidget(self.mdi)
+        self._tiled_once = False   # tile only once, the first time we're shown
+
+    def _open_window(self, name):
+        # Reopen (or focus) a view. Closing only hides the sub-window, so it and
+        # its state are still here — we just show it again and bring it to front.
+        sub = self.windows[name]
+        sub.show()
+        self.mdi.setActiveSubWindow(sub)
+
+    def showEvent(self, event):
+        # Arrange the sub-windows in a grid the first time the dashboard shows
+        # (we can't tile earlier because the area has no size yet).
+        super().showEvent(event)
+        if not self._tiled_once:
+            self._tiled_once = True
+            self.mdi.tileSubWindows()
 
     def start_gaze(self):
         if self.gaze_worker is None:
@@ -179,24 +398,6 @@ class AnalysisDashboard(QTabWidget):
     def _show_gaze_frame(self, qimg):
         self.eye_video.setPixmap(QPixmap.fromImage(qimg).scaled(self.eye_video.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
-    def start_posture(self):
-        if self.side_worker is None:
-            current_user = self.window().session.user_id if self.window().session else "test_user"
-            
-            self.side_worker = SideCameraWorker(camera_index=0, session_user_id=current_user)
-            self.side_worker.frame_ready.connect(self._show_posture_frame)
-            self.side_worker.stats_ready.connect(self.posture_tab.update_stats)
-            self.side_worker.start()
-
-    def stop_posture(self):
-        if self.side_worker is not None:
-            self.side_worker.stop()
-            self.side_worker.wait()
-            self.side_worker = None
-
-    def _show_posture_frame(self, qimg):
-        self.posture_video.setPixmap(QPixmap.fromImage(qimg).scaled(self.posture_video.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-
     def start_headpose(self):
         if self.head_worker is None:
             self.head_worker = HeadPoseWorker(camera_index=0)
@@ -215,7 +416,8 @@ class AnalysisDashboard(QTabWidget):
 
     def stop_all(self):
         self.stop_gaze()
-        self.stop_posture()
+        self.posture_tab.stop_all()
+        self.gaze_posture_tab.stop_all()
         self.stop_headpose()
 
 class ProctorView(QWidget):
