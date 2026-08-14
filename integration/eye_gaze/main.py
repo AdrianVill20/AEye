@@ -154,10 +154,10 @@ while True:
          vgaze = (vgaze_left + vgaze_right) / 2
 
          cv2.putText(frame, str(vgaze), (50, 200), font, 2, (0, 255, 0), 2)
-         if vgaze < 0.60:
+         if vgaze < 0.47:
              cv2.putText(frame, "looking up", (50, 250), font, 2, (0, 255, 0), 2)
              print('up')
-         elif 0.60 < vgaze < 0.75:
+         elif 0.47 < vgaze < 0.75:
              cv2.putText(frame, "looking straight", (50, 250), font, 2, (0, 255, 0), 2)
              print('straight')
          else:
