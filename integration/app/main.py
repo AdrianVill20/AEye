@@ -32,6 +32,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.proctor_view)    # index 2
 
         quit_sc = QShortcut(QKeySequence("Ctrl+Shift+Q"), self)
+        quit_sc.setContext(Qt.ApplicationShortcut)   # works even over the full-screen web view
         quit_sc.activated.connect(QApplication.quit)
 
     def handle_login(self, user_id, password, role):

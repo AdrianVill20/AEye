@@ -4,6 +4,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QPixmap
 from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QFrame, QComboBox, QMdiArea, QMdiSubWindow, QSizePolicy
 REPO_ROOT = Path(__file__).resolve().parent.parent
 from gaze_worker import GazeWorker
@@ -264,37 +265,48 @@ class GazePostureTab(QWidget):
         self.camera2.stop()
 
 
+class LockedPage(QWebEnginePage):
+    """A web page that only allows ONE website. Any link, redirect, or URL to a
+    different host is rejected, so the browser can never leave the allowed site."""
+
+    def __init__(self, allowed_host, parent=None):
+        super().__init__(parent)
+        self.allowed_host = allowed_host
+
+    def acceptNavigationRequest(self, url, nav_type, is_main_frame):
+        host = url.host()
+        allowed = (
+            host == ''                                  # internal pages (about:blank, etc.)
+            or host == self.allowed_host
+            or host.endswith('.' + self.allowed_host)   # its own sub-domains
+        )
+        if not allowed:
+            return False        # reject -> the browser stays on the current page
+        return super().acceptNavigationRequest(url, nav_type, is_main_frame)
+
+    def createWindow(self, _type):
+        # Open "new tab / pop-up" links in THIS same page, so the rule above
+        # still applies (off-site links stay blocked, no pop-up can escape).
+        return self
+
+
 class WebTab(QWidget):
-    """A simple in-app web browser: type a URL, press Go (or Enter), see the page."""
+    """Full-screen kiosk browser locked to ONE site. No toolbar and no window
+    controls — just the page filling the whole screen. Off-site links, redirects
+    and pop-ups are all blocked. Exit the app with Ctrl+Shift+Q."""
+
+    ALLOWED_HOST = 'eclass.scs.usjr.edu.ph'
+    HOME_URL = 'https://eclass.scs.usjr.edu.ph/'
 
     def __init__(self):
         super().__init__()
+        # No toolbar, no margins — the page fills the screen edge to edge.
         layout = QVBoxLayout(self)
-
-        # Address bar: URL text field + Go button
-        bar = QHBoxLayout()
-        self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText('Enter a URL, e.g. https://www.google.com')
-        self.url_input.returnPressed.connect(self._go)   # Enter loads the page
-        go_btn = QPushButton('Go')
-        go_btn.clicked.connect(self._go)
-        bar.addWidget(self.url_input)
-        bar.addWidget(go_btn)
-        layout.addLayout(bar)
-
-        # The actual browser (Chromium, via Qt WebEngine)
+        layout.setContentsMargins(0, 0, 0, 0)
         self.browser = QWebEngineView()
-        self.browser.setUrl(QUrl('https://www.google.com'))   # starting page
+        self.browser.setPage(LockedPage(self.ALLOWED_HOST, self.browser))
+        self.browser.setUrl(QUrl(self.HOME_URL))
         layout.addWidget(self.browser)
-
-    def _go(self):
-        url = self.url_input.text().strip()
-        if not url:
-            return
-        # If the user didn't type http:// or https://, assume https://.
-        if not url.startswith(('http://', 'https://')):
-            url = 'https://' + url
-        self.browser.setUrl(QUrl(url))
 
 
 class ViewWindow(QMdiSubWindow):
@@ -334,7 +346,6 @@ class AnalysisDashboard(QWidget):
             ('Head Pose', self.head_tab),
             ('Head + Posture', self.gaze_posture_tab),
             ('Posture', self.posture_tab),
-            ('Web', self.web_tab),
         ]
 
         # One sub-window per view, plus one button that (re)opens that view.
@@ -353,6 +364,11 @@ class AnalysisDashboard(QWidget):
             open_btn.clicked.connect(lambda checked=False, n=name: self._open_window(n))
             toolbar.addWidget(open_btn)
 
+        # The Web (exam) button opens FULL-SCREEN, separate from the MDI views.
+        web_btn = QPushButton('Web')
+        web_btn.clicked.connect(self._open_web)
+        toolbar.addWidget(web_btn)
+
         # Arrange buttons, pushed to the right.
         toolbar.addStretch()
         tile_btn = QPushButton('Tile')
@@ -369,8 +385,7 @@ class AnalysisDashboard(QWidget):
 
     def _open_window(self, name):
         # Open (or focus) a view, sized to ~80% of the current area so it fits
-        # whatever screen size you're on. Closing only hides it, so its state is
-        # preserved and we just show it again.
+        # whatever screen size you're on.
         sub = self.windows[name]
         area = self.mdi.size()
         w, h = int(area.width() * 0.8), int(area.height() * 0.8)
@@ -378,6 +393,13 @@ class AnalysisDashboard(QWidget):
         sub.move((area.width() - w) // 2, (area.height() - h) // 2)   # center it
         sub.show()
         self.mdi.setActiveSubWindow(sub)
+
+    def _open_web(self):
+        # The exam browser takes over the ENTIRE screen (like F11): no toolbar,
+        # no title bar, no window buttons — just the locked page, always on top.
+        # It can't be closed; exit the whole app with Ctrl+Shift+Q.
+        self.web_tab.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        self.web_tab.showFullScreen()
 
     def start_gaze(self):
         if self.gaze_worker is None:
