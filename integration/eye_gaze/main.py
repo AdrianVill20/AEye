@@ -13,7 +13,7 @@ def midpoint(p1,p2):
 
 font = cv2.FONT_HERSHEY_COMPLEX
 
-def blink(points, landarks):
+def blink(points, landmarks):
     left_point = (landmarks.part(points[0]).x, landmarks.part(points[0]).y)#left eye left
     right_point = (landmarks.part(points[3]).x, landmarks.part(points[3]).y)#left eye right
     center_top = midpoint(landmarks.part(points[1]), landmarks.part(points[2]))#middle up
@@ -75,6 +75,7 @@ def gaze_ratio(eye_marks, landmarks):
       gaze_ratio = left_side_white/right_side_white #4
 
     return gaze_ratio
+
 def vertical_gaze_ratio(eye_marks, landmarks):
     eye_region = np.array([
              (landmarks.part(eye_marks[0]).x, landmarks.part(eye_marks[0]).y),
@@ -110,7 +111,7 @@ def vertical_gaze_ratio(eye_marks, landmarks):
     bottom_threshold = trimmed[int(trimmed_height/2):trimmed_height, 0:width]
     bottom_white = cv2.countNonZero(bottom_threshold)
 
-    print(f"top_white: {top_white}, bottom_white: {bottom_white}, ratio: {top_white/bottom_white if bottom_white else 'inf'}")
+    #print(f"top_white: {top_white}, bottom_white: {bottom_white}, ratio: {top_white/bottom_white if bottom_white else 'inf'}")
 
     if top_white == 0:
         v_ratio = 1
@@ -123,6 +124,7 @@ def vertical_gaze_ratio(eye_marks, landmarks):
 
 while True:
    _, frame = cap.read()
+   frame = cv2.flip(frame, 1)
    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) #simple ky mas makita ang lines sa gray
    newframe = np.zeros((500,500,3), np.uint8)
    faces =detector(gray)
@@ -140,40 +142,59 @@ while True:
       # #    cv2.circle(frame, (x,y), 3, (0,255,0), 3)
          left_div = blink([36,37,38,39,40,41], landmarks)
          right_div = blink([42,43,44,45,46,47], landmarks)
-      #detect blinking
-         if right_div and left_div > 5.5: #blink
-             cv2.putText(frame, 'BLINKING', (50,150), font,2, (0,255,0))
-      #gaze Detection
+
+      #gaze Detection (horizontal)
          gaze_ratio_left = gaze_ratio([36,37,38,39,40,41], landmarks)
          gaze_ratio_right = gaze_ratio([42,43,44,45,46,47], landmarks)
          gaze = (gaze_ratio_right + gaze_ratio_left)/2
-
          cv2.putText(frame, str(gaze), (50,150), font, 2, (0,255,0), 2)
-         vgaze_left = vertical_gaze_ratio([36,37,38,39,40,41], landmarks)
-         vgaze_right = vertical_gaze_ratio([42,43,44,45,46,47], landmarks)
-         vgaze = (vgaze_left + vgaze_right) / 2
 
-         cv2.putText(frame, str(vgaze), (50, 200), font, 2, (0, 255, 0), 2)
-         if vgaze < 0.47:
-             cv2.putText(frame, "looking up", (50, 250), font, 2, (0, 255, 0), 2)
-             print('up')
-         elif 0.47 < vgaze < 0.75:
-             cv2.putText(frame, "looking straight", (50, 250), font, 2, (0, 255, 0), 2)
-             print('straight')
-         else:
+      #detect blinking + vertical gaze + combined label
+         if left_div > 5.5 and right_div > 5.5: #blink
+             cv2.putText(frame, 'BLINKING', (50,150), font,2, (0,255,0))
              cv2.putText(frame, "looking down", (50, 250), font, 2, (0, 255, 0), 2)
-             print('down')
-            #eyegaze
-         if gaze < 0.45:
-            cv2.putText(frame, "looking right", (50,100), font, 2, (0,255,0), 2)
-            newframe[:] = (0,0,255)
-         elif 0.45< gaze < 2:
-             cv2.putText(frame, "looking center", (50,100), font, 2, (0,255,0), 2)
-             newframe[:] = (255,0,0)
-         else: 
-             cv2.putText(frame, "looking left", (50,100), font, 2, (0,255,0), 2)
-             newframe[:] = (0,255,0)
-    
+             print('down (blink)')
+         else:
+             vgaze_left = vertical_gaze_ratio([36,37,38,39,40,41], landmarks)
+             vgaze_right = vertical_gaze_ratio([42,43,44,45,46,47], landmarks)
+             vgaze = (vgaze_left + vgaze_right) / 2
+             cv2.putText(frame, str(vgaze), (50, 200), font, 2, (0, 255, 0), 2)
+
+             # horizontal component
+             if gaze < 0.50:
+                 h_label = "left"
+             elif gaze > 1.8:
+                 h_label = "right"
+             else:
+                 h_label = "center"
+
+             # vertical component
+             if vgaze > 0.62:
+                 v_label = "up"
+             elif  vgaze > 0.2 and vgaze < 0.62:
+                 v_label = "center"
+             else:
+                 v_label = "down"
+
+             # combine
+             if h_label == "center" and v_label == "center":
+                 text = "looking center"
+             else:
+                 text = f"looking {h_label} {v_label}"
+
+             print(f'{text} gaze: {gaze} vgaze: {vgaze}')
+             cv2.putText(frame, text, (50, 250), font, 2, (0, 255, 0), 2)
+
+      #horizontal gaze label (color overlay)
+        #  if gaze < 0.57:
+        #     cv2.putText(frame, "looking right", (50,100), font, 2, (0,255,0), 2)
+        #     newframe[:] = (0,0,255)
+        #  elif 0.57< gaze < 2:
+        #      cv2.putText(frame, "looking center", (50,100), font, 2, (0,255,0), 2)
+        #      newframe[:] = (255,0,0)
+        #  else: 
+        #      cv2.putText(frame, "looking left", (50,100), font, 2, (0,255,0), 2)
+        #      newframe[:] = (0,255,0)
          # cv2.putText(frame, str(left_side_white), (50,100), font, 2, (0,255,0), 2)
          # cv2.putText(frame, str(right_side_white), (50,150), font, 2, (0,255,0), 2)
 
@@ -184,7 +205,7 @@ while True:
          # cv2.imshow('right_threshold', right_threshold) 
    #flipped = cv2.flip(frame,1)
    cv2.imshow("Frame", frame)
-   cv2.imshow("color", newframe)
+#    cv2.imshow("color", newframe)
    key = cv2.waitKey(1)
    if key == 27:
       break
