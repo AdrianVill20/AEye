@@ -171,7 +171,7 @@ while True:
              # vertical component
              if vgaze > 0.60:
                  v_label = "up"
-             elif  vgaze > 0.2 and vgaze < 0.60:
+             elif  vgaze > 0.2 and vgaze < 0.65:
                  v_label = "center"
              else:
                  v_label = "down"
