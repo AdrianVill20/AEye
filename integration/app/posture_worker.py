@@ -1,6 +1,8 @@
 import cv2
 import mediapipe as mp
 import time
+import numpy as np
+from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
 from datetime import datetime
@@ -64,6 +66,7 @@ def extract_posture(result):
            l_wrist.x, l_wrist.y, r_wrist.x, r_wrist.y)
     return coords, raw
 
+
 class SideCameraWorker(QThread):
     frame_ready = Signal(QImage)
     stats_ready = Signal(dict)
@@ -72,6 +75,7 @@ class SideCameraWorker(QThread):
         super().__init__(parent)
         self.camera_index = camera_index
         self.session_user_id = session_user_id
+        self.session_user_id = session_user_id
         self._running = False
         self._log_writer = PostureLogWriter()
 
@@ -79,8 +83,6 @@ class SideCameraWorker(QThread):
         self._running = False
 
     def _open_camera(self):
-        # A webcam can take a moment to be released after a previous Stop, so try
-        # a few times before giving up (fixes "can't start again after stop").
         for _ in range(5):
             cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
             if cap.isOpened():
@@ -122,9 +124,9 @@ class SideCameraWorker(QThread):
                 continue
             read_fails = 0
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            rgb.flags.writeable = False
-            result = pose.process(rgb)
-            rgb.flags.writeable = True
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            result = landmarker.detect_for_video(mp_image, timestamp_ms)
+            timestamp_ms += 33
             stats = self._blank_stats()
             good_frame = False
             if result.pose_landmarks:
