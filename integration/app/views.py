@@ -322,7 +322,7 @@ class AnalysisDashboard(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.eye_tab = AnalysisTab('Eye Tracking', 'Front camera — dlib gaze (Revised_Gaze)', ['Direction', 'Gaze ratio', 'Blink'], 'Demetillo')
+        self.eye_tab = AnalysisTab('Eye Tracking', 'Front camera — MediaPipe iris + eye openness', ['Direction', 'Gaze ratio', 'Blink'], 'Demetillo')
         self.eye_video = QLabel(alignment=Qt.AlignCenter)
         self.eye_video.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         self.eye_tab.set_feed_widget(self.eye_video)
