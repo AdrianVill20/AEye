@@ -410,11 +410,22 @@ class AnalysisDashboard(QWidget):
             self.gaze_worker.stats_ready.connect(self.eye_tab.update_stats)
             self.gaze_worker.start()
 
+            self._calib_btn = QPushButton('Recalibrate')
+            self._calib_btn.clicked.connect(self._recalibrate_gaze)
+            self.eye_tab._panel.insertWidget(2, self._calib_btn)
+
+    def _recalibrate_gaze(self):
+        if self.gaze_worker is not None:
+            self.gaze_worker.recalibrate()
+
     def stop_gaze(self):
         if self.gaze_worker is not None:
             self.gaze_worker.stop()
             self.gaze_worker.wait()
             self.gaze_worker = None
+        if hasattr(self, '_calib_btn') and self._calib_btn is not None:
+            self._calib_btn.setParent(None)
+            self._calib_btn = None
 
     def _show_gaze_frame(self, qimg):
         self.eye_video.setPixmap(QPixmap.fromImage(qimg).scaled(self.eye_video.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))

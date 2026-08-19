@@ -95,6 +95,11 @@ class GazeWorker(QThread):
     def stop(self):
         self._running = False
 
+    def recalibrate(self):
+        self._prev_h = 0.5
+        self._calib_openness = []
+        self._baseline = None
+
     def _open_camera(self):
         for _ in range(5):
             cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
