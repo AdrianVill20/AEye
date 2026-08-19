@@ -4,8 +4,8 @@ from db_config import get_connection
 
 INSERT_SQL = (
     "INSERT INTO gaze_logs "
-    "(session_user_id, captured_at, direction, gaze_ratio, is_blinking) "
-    "VALUES (%s, %s, %s, %s, %s)"
+    "(session_id, session_user_id, captured_at, direction, gaze_ratio, is_blinking) "
+    "VALUES (%s, %s, %s, %s, %s, %s)"
 )
 
 
@@ -17,7 +17,7 @@ class GazeLogWriter(QThread):
         self._running = False
 
     def enqueue(self, record):
-        """record = (session_user_id, captured_at, direction, gaze_ratio, is_blinking)"""
+        """record = (session_id, session_user_id, captured_at, direction, gaze_ratio, is_blinking)"""
         self._queue.put(record)
 
     def stop(self):
@@ -38,7 +38,7 @@ class GazeLogWriter(QThread):
                 cursor.execute(INSERT_SQL, record)
                 conn.commit()
             except Exception as exc:
-                print(f'[DB] Insert failed: {exc}')
+                print(f'[DB] Gaze insert failed: {exc}')
                 conn.rollback()
         cursor.close()
         conn.close()

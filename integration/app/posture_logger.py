@@ -4,12 +4,12 @@ from db_config import get_connection
 
 INSERT_SQL = (
     "INSERT INTO posture_logs "
-    "(session_user_id, captured_at, "
+    "(session_id, session_user_id, captured_at, "
     "left_shoulder_x, left_shoulder_y, "
     "right_shoulder_x, right_shoulder_y, "
     "left_wrist_x, left_wrist_y, "
     "right_wrist_x, right_wrist_y) "
-    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
 )
 
 
@@ -21,7 +21,7 @@ class PostureLogWriter(QThread):
         self._running = False
 
     def enqueue(self, record):
-        """record = (session_user_id, captured_at, l_sh_x, l_sh_y,
+        """record = (session_id, session_user_id, captured_at, l_sh_x, l_sh_y,
                       r_sh_x, r_sh_y, l_wr_x, l_wr_y, r_wr_x, r_wr_y)"""
         self._queue.put(record)
 
@@ -43,7 +43,7 @@ class PostureLogWriter(QThread):
                 cursor.execute(INSERT_SQL, record)
                 conn.commit()
             except Exception as exc:
-                print(f'[DB] Insert failed: {exc}')
+                print(f'[DB] Posture insert failed: {exc}')
                 conn.rollback()
         cursor.close()
         conn.close()

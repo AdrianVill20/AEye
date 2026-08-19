@@ -1,23 +1,32 @@
 import sys
 import subprocess
 from pathlib import Path
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPixmap
-from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWebEngineCore import QWebEnginePage
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QFrame, QComboBox, QMdiArea, QMdiSubWindow, QSizePolicy
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QFrame, QComboBox, QMdiArea, QMdiSubWindow, QSizePolicy, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QStackedWidget
 REPO_ROOT = Path(__file__).resolve().parent.parent
 from gaze_worker import GazeWorker
 from posture_worker import SideCameraWorker
 from headpose_worker import HeadPoseWorker
+from auth import create_user, get_all_sessions
+from gaze_logger import GazeLogWriter
+from posture_logger import PostureLogWriter
 
 class LoginView(QWidget):
 
     def __init__(self, on_login):
         super().__init__()
         self._on_login = on_login
-        layout = QVBoxLayout(self)
-        layout.setAlignment(Qt.AlignCenter)
+
+        self.stack = QStackedWidget()
+        outer = QVBoxLayout(self)
+        outer.setAlignment(Qt.AlignCenter)
+        outer.addWidget(self.stack)
+
+        # --- Page 0: Sign In ---
+        self._login_page = QWidget()
+        lp = QVBoxLayout(self._login_page)
+        lp.setAlignment(Qt.AlignCenter)
         title = QLabel('AEye — Sign In')
         title.setStyleSheet('font-size: 20px; font-weight: bold;')
         title.setAlignment(Qt.AlignCenter)
@@ -44,16 +53,87 @@ class LoginView(QWidget):
         sign_in_btn = QPushButton('Sign In')
         sign_in_btn.setMaximumWidth(300)
         sign_in_btn.clicked.connect(self._handle_sign_in)
-        layout.addWidget(title)
-        layout.addWidget(self.id_input, alignment=Qt.AlignCenter)
-        layout.addWidget(self.pw_input, alignment=Qt.AlignCenter)
-        layout.addLayout(roles)
-        layout.addWidget(self.error_label)
-        layout.addWidget(sign_in_btn, alignment=Qt.AlignCenter)
+        create_btn = QPushButton("Don't have an account? Create one")
+        create_btn.setFlat(True)
+        create_btn.setStyleSheet('color: #555;')
+        create_btn.clicked.connect(lambda: self.stack.setCurrentIndex(1))
+        lp.addWidget(title)
+        lp.addWidget(self.id_input, alignment=Qt.AlignCenter)
+        lp.addWidget(self.pw_input, alignment=Qt.AlignCenter)
+        lp.addLayout(roles)
+        lp.addWidget(self.error_label)
+        lp.addWidget(sign_in_btn, alignment=Qt.AlignCenter)
+        lp.addWidget(create_btn, alignment=Qt.AlignCenter)
+
+        # --- Page 1: Create Account ---
+        self._reg_page = QWidget()
+        rp = QVBoxLayout(self._reg_page)
+        rp.setAlignment(Qt.AlignCenter)
+        reg_title = QLabel('AEye — Create Account')
+        reg_title.setStyleSheet('font-size: 18px; font-weight: bold;')
+        reg_title.setAlignment(Qt.AlignCenter)
+        self.reg_id = QLineEdit()
+        self.reg_id.setPlaceholderText('School-issued ID')
+        self.reg_id.setMaximumWidth(300)
+        self.reg_name = QLineEdit()
+        self.reg_name.setPlaceholderText('Full name')
+        self.reg_name.setMaximumWidth(300)
+        self.reg_pw = QLineEdit()
+        self.reg_pw.setPlaceholderText('Password')
+        self.reg_pw.setEchoMode(QLineEdit.EchoMode.Password)
+        self.reg_pw.setMaximumWidth(300)
+        self.reg_student_radio = QRadioButton('Student')
+        self.reg_proctor_radio = QRadioButton('Proctor')
+        self.reg_student_radio.setChecked(True)
+        reg_role_group = QButtonGroup(self)
+        reg_role_group.addButton(self.reg_student_radio)
+        reg_role_group.addButton(self.reg_proctor_radio)
+        reg_roles = QHBoxLayout()
+        reg_roles.setAlignment(Qt.AlignCenter)
+        reg_roles.addWidget(self.reg_student_radio)
+        reg_roles.addWidget(self.reg_proctor_radio)
+        self.reg_error = QLabel('')
+        self.reg_error.setStyleSheet('color: red;')
+        self.reg_error.setAlignment(Qt.AlignCenter)
+        self.reg_success = QLabel('')
+        self.reg_success.setStyleSheet('color: green;')
+        self.reg_success.setAlignment(Qt.AlignCenter)
+        register_btn = QPushButton('Create Account')
+        register_btn.setMaximumWidth(300)
+        register_btn.clicked.connect(self._handle_register)
+        back_btn = QPushButton('Back to Sign In')
+        back_btn.setFlat(True)
+        back_btn.setStyleSheet('color: #555;')
+        back_btn.clicked.connect(lambda: self.stack.setCurrentIndex(0))
+        rp.addWidget(reg_title)
+        rp.addWidget(self.reg_id, alignment=Qt.AlignCenter)
+        rp.addWidget(self.reg_name, alignment=Qt.AlignCenter)
+        rp.addWidget(self.reg_pw, alignment=Qt.AlignCenter)
+        rp.addLayout(reg_roles)
+        rp.addWidget(self.reg_error)
+        rp.addWidget(self.reg_success)
+        rp.addWidget(register_btn, alignment=Qt.AlignCenter)
+        rp.addWidget(back_btn, alignment=Qt.AlignCenter)
+
+        self.stack.addWidget(self._login_page)
+        self.stack.addWidget(self._reg_page)
 
     def _handle_sign_in(self):
         role = 'student' if self.student_radio.isChecked() else 'proctor'
         self._on_login(self.id_input.text(), self.pw_input.text(), role)
+
+    def _handle_register(self):
+        self.reg_error.setText('')
+        self.reg_success.setText('')
+        role = 'student' if self.reg_student_radio.isChecked() else 'proctor'
+        err = create_user(self.reg_id.text(), self.reg_pw.text(), self.reg_name.text(), role)
+        if err:
+            self.reg_error.setText(err)
+        else:
+            self.reg_success.setText('Account created! You can now sign in.')
+            self.reg_id.clear()
+            self.reg_name.clear()
+            self.reg_pw.clear()
 
     def show_error(self, message):
         self.error_label.setText(message)
@@ -200,20 +280,57 @@ class CameraSection(QWidget):
         camera_index = int(self.index_box.currentText())   # read the dropdown
         session = self.window().session                    # who is logged in
         user_id = session.user_id if session else 'test_user'
+        session_id = session.session_id if session else 0
 
         self.worker = self.worker_class(camera_index=camera_index, session_user_id=user_id)
         self.worker.frame_ready.connect(self._show_frame)
         self.worker.stats_ready.connect(self._show_status)
+        self.worker.stats_ready.connect(self._log_posture)
         self.worker.start()
+
+        self._posture_logger = PostureLogWriter()
+        self._posture_logger._session_id = session_id
+        self._posture_logger._session_user_id = user_id
+        self._posture_logger.start()
 
         self.index_box.setEnabled(False)   # can't change camera while running
         self.button.setText('Stop')
+
+    def _log_posture(self, stats):
+        from datetime import datetime
+        if not hasattr(self, '_posture_logger') or self._posture_logger is None:
+            return
+        try:
+            l_sh = stats.get('Left shoulder', '')
+            r_sh = stats.get('Right shoulder', '')
+            l_wr = stats.get('Left wrist', '')
+            r_wr = stats.get('Right wrist', '')
+            if '--' in (l_sh, r_sh, l_wr, r_wr):
+                return
+            l_sh_x, l_sh_y = [float(v) for v in l_sh.split(',')]
+            r_sh_x, r_sh_y = [float(v) for v in r_sh.split(',')]
+            l_wr_x, l_wr_y = [float(v) for v in l_wr.split(',')]
+            r_wr_x, r_wr_y = [float(v) for v in r_wr.split(',')]
+        except (ValueError, AttributeError):
+            return
+        record = (
+            self._posture_logger._session_id,
+            self._posture_logger._session_user_id,
+            datetime.now(),
+            l_sh_x, l_sh_y, r_sh_x, r_sh_y,
+            l_wr_x, l_wr_y, r_wr_x, r_wr_y,
+        )
+        self._posture_logger.enqueue(record)
 
     def stop(self):
         if self.worker is not None:
             self.worker.stop()
             self.worker.wait()
             self.worker = None
+        if hasattr(self, '_posture_logger') and self._posture_logger is not None:
+            self._posture_logger.stop()
+            self._posture_logger.wait()
+            self._posture_logger = None
         self.index_box.setEnabled(True)
         self.button.setText('Start')
 
@@ -265,49 +382,6 @@ class GazePostureTab(QWidget):
         self.camera2.stop()
 
 
-class LockedPage(QWebEnginePage):
-    """A web page that only allows ONE website. Any link, redirect, or URL to a
-    different host is rejected, so the browser can never leave the allowed site."""
-
-    def __init__(self, allowed_host, parent=None):
-        super().__init__(parent)
-        self.allowed_host = allowed_host
-
-    def acceptNavigationRequest(self, url, nav_type, is_main_frame):
-        host = url.host()
-        allowed = (
-            host == ''                                  # internal pages (about:blank, etc.)
-            or host == self.allowed_host
-            or host.endswith('.' + self.allowed_host)   # its own sub-domains
-        )
-        if not allowed:
-            return False        # reject -> the browser stays on the current page
-        return super().acceptNavigationRequest(url, nav_type, is_main_frame)
-
-    def createWindow(self, _type):
-        # Open "new tab / pop-up" links in THIS same page, so the rule above
-        # still applies (off-site links stay blocked, no pop-up can escape).
-        return self
-
-
-class WebTab(QWidget):
-    """Full-screen kiosk browser locked to ONE site. No toolbar and no window
-    controls — just the page filling the whole screen. Off-site links, redirects
-    and pop-ups are all blocked. Exit the app with Ctrl+Shift+Q."""
-
-    ALLOWED_HOST = 'eclass.scs.usjr.edu.ph'
-    HOME_URL = 'https://eclass.scs.usjr.edu.ph/'
-
-    def __init__(self):
-        super().__init__()
-        # No toolbar, no margins — the page fills the screen edge to edge.
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        self.browser = QWebEngineView()
-        self.browser.setPage(LockedPage(self.ALLOWED_HOST, self.browser))
-        self.browser.setUrl(QUrl(self.HOME_URL))
-        layout.addWidget(self.browser)
-
 
 class ViewWindow(QMdiSubWindow):
     """An MDI sub-window that hides instead of closing, so the toolbar's
@@ -336,7 +410,7 @@ class AnalysisDashboard(QWidget):
         self.head_worker = None
         self.posture_tab = PostureTab()
         self.gaze_posture_tab = GazePostureTab()
-        self.web_tab = WebTab()
+        self.web_tab = None
         # --- MDI area: each analysis view is its own movable sub-window ---
         self.mdi = QMdiArea()
 
@@ -371,6 +445,16 @@ class AnalysisDashboard(QWidget):
 
         # Arrange buttons, pushed to the right.
         toolbar.addStretch()
+
+        self.user_label = QLabel('')
+        self.user_label.setStyleSheet('color: #333; font-weight: bold; padding-right: 8px;')
+        toolbar.addWidget(self.user_label)
+
+        logout_btn = QPushButton('Logout')
+        logout_btn.setStyleSheet('background-color: #c0392b; color: white;')
+        logout_btn.clicked.connect(self._logout)
+        toolbar.addWidget(logout_btn)
+
         tile_btn = QPushButton('Tile')
         tile_btn.clicked.connect(self.mdi.tileSubWindows)
         cascade_btn = QPushButton('Cascade')
@@ -395,26 +479,61 @@ class AnalysisDashboard(QWidget):
         self.mdi.setActiveSubWindow(sub)
 
     def _open_web(self):
-        # The exam browser takes over the ENTIRE screen (like F11): no toolbar,
-        # no title bar, no window buttons — just the locked page, always on top.
-        # It can't be closed; exit the whole app with Ctrl+Shift+Q.
+        if self.web_tab is None:
+            from web_tab import WebTab
+            self.web_tab = WebTab()
         self.web_tab.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         self.web_tab.showFullScreen()
 
     def start_gaze(self):
         if self.gaze_worker is None:
-            current_user = self.window().session.user_id if self.window().session else "test_user"
-            
+            session = self.window().session
+            current_user = session.user_id if session else 'test_user'
+            session_id = session.session_id if session else 0
+
             self.gaze_worker = GazeWorker(camera_index=0, session_user_id=current_user)
             self.gaze_worker.frame_ready.connect(self._show_gaze_frame)
             self.gaze_worker.stats_ready.connect(self.eye_tab.update_stats)
+            self.gaze_worker.stats_ready.connect(self._log_gaze)
             self.gaze_worker.start()
+
+            self._gaze_logger = GazeLogWriter()
+            self._gaze_logger._session_id = session_id
+            self._gaze_logger._session_user_id = current_user
+            self._gaze_logger.start()
+
+    def _log_gaze(self, stats):
+        from datetime import datetime
+        if not hasattr(self, '_gaze_logger') or self._gaze_logger is None:
+            return
+        direction = stats.get('Direction', '--')
+        if direction == '--':
+            return
+        ratio_str = stats.get('Gaze ratio', '')
+        is_blink = 1 if stats.get('Blink') == 'BLINKING' else 0
+        try:
+            ratio = float(ratio_str.split('h=')[1].split(' ')[0]) if 'h=' in ratio_str else 0.0
+        except (IndexError, ValueError):
+            ratio = 0.0
+        record = (
+            self._gaze_logger._session_id,
+            self._gaze_logger._session_user_id,
+            datetime.now(),
+            direction,
+            ratio,
+            is_blink,
+        )
+        self._gaze_logger.enqueue(record)
 
     def stop_gaze(self):
         if self.gaze_worker is not None:
             self.gaze_worker.stop()
             self.gaze_worker.wait()
             self.gaze_worker = None
+        if hasattr(self, '_gaze_logger') and self._gaze_logger is not None:
+            self._gaze_logger.stop()
+            self._gaze_logger.wait()
+            self._gaze_logger = None
 
     def _show_gaze_frame(self, qimg):
         self.eye_video.setPixmap(QPixmap.fromImage(qimg).scaled(self.eye_video.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
@@ -441,12 +560,45 @@ class AnalysisDashboard(QWidget):
         self.gaze_posture_tab.stop_all()
         self.stop_headpose()
 
+    def update_user_info(self, user_id, role):
+        self.user_label.setText(f'{user_id} ({role})')
+
+    def _logout(self):
+        self.stop_all()
+        self.window().logout()
+
 class ProctorView(QWidget):
 
     def __init__(self):
         super().__init__()
         layout = QVBoxLayout(self)
-        layout.setAlignment(Qt.AlignCenter)
-        label = QLabel('Proctor Mode — monitoring dashboard goes here (Module 3)')
-        label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(label)
+
+        header = QLabel('Proctor Dashboard')
+        header.setStyleSheet('font-size: 18px; font-weight: bold;')
+        layout.addWidget(header)
+
+        self.session_table = QTableWidget()
+        self.session_table.setColumnCount(4)
+        self.session_table.setHorizontalHeaderLabels(['Student ID', 'Name', 'Role', 'Login Time'])
+        self.session_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.session_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.session_table.setSelectionBehavior(QTableWidget.SelectRows)
+        layout.addWidget(self.session_table)
+
+        btn_row = QHBoxLayout()
+        self.refresh_btn = QPushButton('Refresh')
+        self.refresh_btn.clicked.connect(self._refresh)
+        btn_row.addWidget(self.refresh_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        self._refresh()
+
+    def _refresh(self):
+        sessions = get_all_sessions()
+        self.session_table.setRowCount(len(sessions))
+        for i, s in enumerate(sessions):
+            self.session_table.setItem(i, 0, QTableWidgetItem(str(s['user_id'])))
+            self.session_table.setItem(i, 1, QTableWidgetItem(str(s['full_name'])))
+            self.session_table.setItem(i, 2, QTableWidgetItem(str(s['role'])))
+            self.session_table.setItem(i, 3, QTableWidgetItem(str(s['login_time'])))
