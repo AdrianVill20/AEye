@@ -42,6 +42,13 @@ def show(landmark):
         return 'hidden'
     return f'{landmark.x:.2f}, {landmark.y:.2f}'
 
+def db_values(landmark):
+    # x and y are stored as NULL when the landmark was only guessed, but the
+    # visibility always goes in - that is what says how far to trust the row.
+    if not is_visible(landmark):
+        return (None, None, landmark.visibility)
+    return (landmark.x, landmark.y, landmark.visibility)
+
 def extract_posture(result):
     if not result.pose_landmarks:
         return None, None
@@ -58,12 +65,10 @@ def extract_posture(result):
         'Right wrist': show(r_wrist),
     }
 
-    # Only save a row when all four are real readings.
-    if not (is_visible(l_shoulder) and is_visible(r_shoulder)
-            and is_visible(l_wrist) and is_visible(r_wrist)):
-        return coords, None
-    raw = (l_shoulder.x, l_shoulder.y, r_shoulder.x, r_shoulder.y,
-           l_wrist.x, l_wrist.y, r_wrist.x, r_wrist.y)
+    # The row is kept even when an arm is hidden: the coordinate columns are
+    # nullable and each carries its own visibility score.
+    raw = (db_values(l_shoulder) + db_values(r_shoulder)
+           + db_values(l_wrist) + db_values(r_wrist))
     return coords, raw
 
 
@@ -74,7 +79,6 @@ class SideCameraWorker(QThread):
     def __init__(self, camera_index=1, session_user_id=None, parent=None):
         super().__init__(parent)
         self.camera_index = camera_index
-        self.session_user_id = session_user_id
         self.session_user_id = session_user_id
         self._running = False
         self._log_writer = PostureLogWriter()
@@ -124,9 +128,7 @@ class SideCameraWorker(QThread):
                 continue
             read_fails = 0
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-            result = landmarker.detect_for_video(mp_image, timestamp_ms)
-            timestamp_ms += 33
+            result = pose.process(rgb)
             stats = self._blank_stats()
             good_frame = False
             if result.pose_landmarks:
@@ -149,7 +151,12 @@ class SideCameraWorker(QThread):
                     if coords is not None:
                         display_stats.update(coords)
                     if raw is not None:
-                        record = (self.session_user_id, datetime.now()) + raw
+                        # Every sample with a pose goes in - hidden joints are
+                        # NULL, not skipped, so the gaps stay visible in the data.
+                        record = (self.session_user_id, datetime.now()) + raw + (
+                            count_visible(lm),
+                            1 if good_frame else 0,
+                        )
                         self._log_writer.enqueue(record)
                 stats.update(display_stats)
                 stats['Landmarks detected (/33)'] = str(count_visible(lm))
