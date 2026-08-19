@@ -1,4 +1,5 @@
 import math
+import time
 from pathlib import Path
 import cv2
 import numpy as np
@@ -25,9 +26,33 @@ class HeadPoseWorker(QThread):
         self._running = True
         options = vision.FaceLandmarkerOptions(base_options=python.BaseOptions(model_asset_path=str(MODEL)), running_mode=vision.RunningMode.VIDEO, output_facial_transformation_matrixes=True)
         landmarker = vision.FaceLandmarker.create_from_options(options)
-        cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
-        if not cap.isOpened():
-            self.stats_ready.emit({'Yaw': f'Camera {self.camera_index} unavailable', 'Pitch': '--', 'Roll': '--', 'Landmarks detected (/478)': '--'})
+        backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
+        cap = cv2.VideoCapture()
+        for backend in backends:
+            for attempt in range(3):
+                cap = cv2.VideoCapture(self.camera_index, backend)
+                if not cap.isOpened():
+                    cap.release()
+                    time.sleep(0.5)
+                    continue
+                time.sleep(0.5)
+                for _ in range(10):
+                    ret, _ = cap.read()
+                    if ret:
+                        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                        print(f'[CAM] Camera {self.camera_index} opened ({w}x{h}) backend={backend}')
+                        break
+                    time.sleep(0.2)
+                else:
+                    cap.release()
+                    continue
+                break
+            else:
+                continue
+            break
+        else:
+            self.stats_ready.emit({'Yaw': f'Camera {self.camera_index} no feed', 'Pitch': '--', 'Roll': '--', 'Landmarks detected (/478)': '--'})
             return
         timestamp_ms = 0
         while self._running:

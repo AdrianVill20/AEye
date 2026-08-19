@@ -1,15 +1,14 @@
 import sys
 import subprocess
 from pathlib import Path
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPixmap
-from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWebEngineCore import QWebEnginePage
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QFrame, QComboBox, QMdiArea, QMdiSubWindow, QSizePolicy
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QFrame, QComboBox, QMdiArea, QMdiSubWindow, QSizePolicy, QStackedWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox
 REPO_ROOT = Path(__file__).resolve().parent.parent
 from gaze_worker import GazeWorker
 from posture_worker import SideCameraWorker
 from headpose_worker import HeadPoseWorker
+from front_cam_worker import FrontCamWorker
 
 class LoginView(QWidget):
 
@@ -265,50 +264,6 @@ class GazePostureTab(QWidget):
         self.camera2.stop()
 
 
-class LockedPage(QWebEnginePage):
-    """A web page that only allows ONE website. Any link, redirect, or URL to a
-    different host is rejected, so the browser can never leave the allowed site."""
-
-    def __init__(self, allowed_host, parent=None):
-        super().__init__(parent)
-        self.allowed_host = allowed_host
-
-    def acceptNavigationRequest(self, url, nav_type, is_main_frame):
-        host = url.host()
-        allowed = (
-            host == ''                                  # internal pages (about:blank, etc.)
-            or host == self.allowed_host
-            or host.endswith('.' + self.allowed_host)   # its own sub-domains
-        )
-        if not allowed:
-            return False        # reject -> the browser stays on the current page
-        return super().acceptNavigationRequest(url, nav_type, is_main_frame)
-
-    def createWindow(self, _type):
-        # Open "new tab / pop-up" links in THIS same page, so the rule above
-        # still applies (off-site links stay blocked, no pop-up can escape).
-        return self
-
-
-class WebTab(QWidget):
-    """Full-screen kiosk browser locked to ONE site. No toolbar and no window
-    controls — just the page filling the whole screen. Off-site links, redirects
-    and pop-ups are all blocked. Exit the app with Ctrl+Shift+Q."""
-
-    ALLOWED_HOST = 'eclass.scs.usjr.edu.ph'
-    HOME_URL = 'https://eclass.scs.usjr.edu.ph/'
-
-    def __init__(self):
-        super().__init__()
-        # No toolbar, no margins — the page fills the screen edge to edge.
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        self.browser = QWebEngineView()
-        self.browser.setPage(LockedPage(self.ALLOWED_HOST, self.browser))
-        self.browser.setUrl(QUrl(self.HOME_URL))
-        layout.addWidget(self.browser)
-
-
 class ViewWindow(QMdiSubWindow):
     """An MDI sub-window that hides instead of closing, so the toolbar's
     buttons can reopen it later. (A normal close would remove it for good.)"""
@@ -316,6 +271,22 @@ class ViewWindow(QMdiSubWindow):
     def closeEvent(self, event):
         event.ignore()   # don't actually close...
         self.hide()      # ...just hide it, so show() can bring it back
+
+
+class FrontSideCamTab(QWidget):
+    """Front cam (combined eye gaze + head pose) + side cam (posture)."""
+
+    def __init__(self):
+        super().__init__()
+        layout = QHBoxLayout(self)
+        self.front = CameraSection('Front Cam — Gaze + Head Pose', FrontCamWorker, default_index=0)
+        self.side = CameraSection('Side Cam — Posture', SideCameraWorker, default_index=1)
+        layout.addWidget(self.front)
+        layout.addWidget(self.side)
+
+    def stop_all(self):
+        self.front.stop()
+        self.side.stop()
 
 
 class AnalysisDashboard(QWidget):
@@ -336,7 +307,8 @@ class AnalysisDashboard(QWidget):
         self.head_worker = None
         self.posture_tab = PostureTab()
         self.gaze_posture_tab = GazePostureTab()
-        self.web_tab = WebTab()
+        self.front_side_tab = FrontSideCamTab()
+        self.web_tab = None
         # --- MDI area: each analysis view is its own movable sub-window ---
         self.mdi = QMdiArea()
 
@@ -345,6 +317,7 @@ class AnalysisDashboard(QWidget):
             ('Eye Tracking', self.eye_tab),
             ('Head Pose', self.head_tab),
             ('Head + Posture', self.gaze_posture_tab),
+            ('Front + Side Cam', self.front_side_tab),
             ('Posture', self.posture_tab),
         ]
 
@@ -395,9 +368,9 @@ class AnalysisDashboard(QWidget):
         self.mdi.setActiveSubWindow(sub)
 
     def _open_web(self):
-        # The exam browser takes over the ENTIRE screen (like F11): no toolbar,
-        # no title bar, no window buttons — just the locked page, always on top.
-        # It can't be closed; exit the whole app with Ctrl+Shift+Q.
+        if self.web_tab is None:
+            from web_tab import WebTab
+            self.web_tab = WebTab()
         self.web_tab.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         self.web_tab.showFullScreen()
 
@@ -450,6 +423,7 @@ class AnalysisDashboard(QWidget):
         self.stop_gaze()
         self.posture_tab.stop_all()
         self.gaze_posture_tab.stop_all()
+        self.front_side_tab.stop_all()
         self.stop_headpose()
 
 class ProctorView(QWidget):

@@ -1,4 +1,4 @@
-import sys
+import math
 import time
 from pathlib import Path
 import cv2
@@ -28,9 +28,9 @@ H_LEFT_THRESH = 0.42
 H_RIGHT_THRESH = 0.58
 V_UP_THRESHOLD = 0.01
 V_DOWN_THRESHOLD = -0.01
-
 CALIB_FRAMES = 40
 SMOOTHING = 0.3
+HEAD_TH = 10
 
 
 def _ema(prev, new, alpha=SMOOTHING):
@@ -79,7 +79,14 @@ def _pupil_from_eye_region(gray, contour_pts):
     return cx, cy
 
 
-class GazeWorker(QThread):
+class FrontCamWorker(QThread):
+    """Combined eye gaze + head pose on a single front camera.
+
+    Runs FaceLandmarker once per frame, then extracts:
+      - Eye gaze: pupil position (horizontal) + eye openness (vertical)
+      - Head pose: yaw / pitch / roll from the facial transformation matrix
+    """
+
     frame_ready = Signal(QImage)
     stats_ready = Signal(dict)
 
@@ -94,11 +101,6 @@ class GazeWorker(QThread):
 
     def stop(self):
         self._running = False
-
-    def recalibrate(self):
-        self._prev_h = 0.5
-        self._calib_openness = []
-        self._baseline = None
 
     def _open_camera(self):
         backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
@@ -121,10 +123,6 @@ class GazeWorker(QThread):
                 cap.release()
         return cv2.VideoCapture()
 
-    @staticmethod
-    def _blank_stats():
-        return {'Direction': '--', 'Gaze ratio': '--', 'Blink': '--'}
-
     def run(self):
         self._running = True
         self._prev_h = 0.5
@@ -137,14 +135,18 @@ class GazeWorker(QThread):
             num_faces=1,
             min_face_detection_confidence=0.5,
             min_tracking_confidence=0.5,
+            output_facial_transformation_matrixes=True,
         )
         landmarker = vision.FaceLandmarker.create_from_options(options)
 
         cap = self._open_camera()
         if not cap.isOpened():
-            stats = self._blank_stats()
-            stats['Direction'] = f'Camera {self.camera_index} unavailable'
-            self.stats_ready.emit(stats)
+            self.stats_ready.emit({
+                'Gaze Direction': f'Camera {self.camera_index} unavailable',
+                'H Ratio': '--', 'V Direction': '--',
+                'Head Direction': '--', 'Yaw': '--', 'Pitch': '--', 'Roll': '--',
+                'Landmarks': '--',
+            })
             landmarker.close()
             return
 
@@ -163,22 +165,26 @@ class GazeWorker(QThread):
             result = landmarker.detect_for_video(mp_img, timestamp_ms)
             timestamp_ms += 33
 
-            stats = self._blank_stats()
+            stats = {
+                'Gaze Direction': '--', 'H Ratio': '--', 'V Direction': '--',
+                'Head Direction': '--', 'Yaw': '--', 'Pitch': '--', 'Roll': '--',
+                'Landmarks': '--',
+            }
 
             if result.face_landmarks:
                 lm = result.face_landmarks[0]
+                stats['Landmarks'] = str(len(lm))
 
+                # --- Eye gaze ---
                 right_contour = np.array([_to_px(lm, i, w, h) for i in RIGHT_EYE_CONTOUR], dtype=np.int32)
                 left_contour = np.array([_to_px(lm, i, w, h) for i in LEFT_EYE_CONTOUR], dtype=np.int32)
 
-                r_outer, r_inner = RIGHT_EYE_CORNERS
-                r_outer_px = lm[r_outer].x * w
-                r_inner_px = lm[r_inner].x * w
+                r_outer_px = lm[RIGHT_EYE_CORNERS[0]].x * w
+                r_inner_px = lm[RIGHT_EYE_CORNERS[1]].x * w
                 r_eye_width = r_inner_px - r_outer_px
 
-                l_outer, l_inner = LEFT_EYE_CORNERS
-                l_outer_px = lm[l_outer].x * w
-                l_inner_px = lm[l_inner].x * w
+                l_outer_px = lm[LEFT_EYE_CORNERS[0]].x * w
+                l_inner_px = lm[LEFT_EYE_CORNERS[1]].x * w
                 l_eye_width = l_inner_px - l_outer_px
 
                 r_pupil = _pupil_from_eye_region(gray, right_contour)
@@ -200,6 +206,7 @@ class GazeWorker(QThread):
                 else:
                     h_dir = "Center"
 
+                # Eye openness
                 r_upper_y = _avg_val(lm, RIGHT_UPPER_LIDS, 'y', h)
                 r_lower_y = _avg_val(lm, RIGHT_LOWER_LIDS, 'y', h)
                 l_upper_y = _avg_val(lm, LEFT_UPPER_LIDS, 'y', h)
@@ -223,18 +230,39 @@ class GazeWorker(QThread):
                     else:
                         v_dir = "Center"
 
-                direction = f"{v_dir} / {h_dir}"
-                color = (0, 255, 0) if h_dir == "Left" else (0, 0, 255) if h_dir == "Right" else (255, 0, 0)
-
-                cv2.rectangle(frame, (0, 0), (w, 40), color, -1)
-                cv2.putText(frame, direction, (10, 28), FONT, 0.8, (255, 255, 255), 2)
-
+                gaze_dir = f"{v_dir} / {h_dir}"
                 cv2.polylines(frame, [right_contour], True, (0, 255, 0), 1)
                 cv2.polylines(frame, [left_contour], True, (255, 0, 0), 1)
 
-                stats['Direction'] = direction
-                stats['Gaze ratio'] = f'h={self._prev_h:.3f} v={avg_open:.4f}'
-                stats['Blink'] = 'open'
+                stats['Gaze Direction'] = gaze_dir
+                stats['H Ratio'] = f'{self._prev_h:.3f}'
+                stats['V Direction'] = v_dir
+
+                # --- Head pose ---
+                if result.facial_transformation_matrixes:
+                    R = np.array(result.facial_transformation_matrixes[0])[:3, :3]
+                    sy = math.sqrt(R[0, 0] ** 2 + R[1, 0] ** 2)
+                    yaw = math.degrees(math.atan2(-R[2, 0], sy))
+                    pitch = math.degrees(math.atan2(R[2, 1], R[2, 2]))
+                    roll = math.degrees(math.atan2(R[1, 0], R[0, 0]))
+
+                    stats['Yaw'] = f'{yaw:+.1f}'
+                    stats['Pitch'] = f'{pitch:+.1f}'
+                    stats['Roll'] = f'{roll:+.1f}'
+
+                    vert = 'down' if pitch > HEAD_TH else 'up' if pitch < -HEAD_TH else ''
+                    horiz = 'right' if yaw > HEAD_TH else 'left' if yaw < -HEAD_TH else ''
+                    words = ' '.join((w for w in (vert, horiz) if w))
+                    head_dir = f'looking {words}' if words else 'looking center'
+                    stats['Head Direction'] = head_dir
+
+                    cv2.putText(frame, head_dir, (10, 28), FONT, 0.7, (0, 200, 255), 2)
+                    cv2.putText(frame, f'Y {yaw:+.0f} P {pitch:+.0f} R {roll:+.0f}', (10, 55), FONT, 0.6, (0, 255, 0), 1)
+
+                # Combined direction bar
+                color = (0, 255, 0) if h_dir == "Left" else (0, 0, 255) if h_dir == "Right" else (255, 0, 0)
+                cv2.rectangle(frame, (0, 0), (w, 20), color, -1)
+                cv2.putText(frame, gaze_dir, (10, 16), FONT, 0.5, (255, 255, 255), 1)
 
             rgb_out = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             h, w = rgb_out.shape[:2]
