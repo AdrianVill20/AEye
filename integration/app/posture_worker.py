@@ -83,14 +83,23 @@ class SideCameraWorker(QThread):
     frame_ready = Signal(QImage)
     stats_ready = Signal(dict)
 
-    def __init__(self, camera_index=1, session_user_id=None, parent=None):
+    def __init__(self, camera_index=1, session_user_id=None, log_to_db=False, parent=None):
         super().__init__(parent)
         self.camera_index = camera_index
         self.session_user_id = session_user_id
         self._running = False
+        # Only the Front + Side Cam tab logs to MySQL. The other tabs are for
+        # testing the camera, so they run without a writer and save nothing.
+        self._log_writer = PostureLogWriter() if log_to_db else None
 
     def stop(self):
         self._running = False
+
+    def _stop_log_writer(self):
+        # Nothing to do on the tabs that run without a writer.
+        if self._log_writer is not None:
+            self._log_writer.stop()
+            self._log_writer.wait()
 
     def _open_camera(self):
         backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
@@ -129,6 +138,8 @@ class SideCameraWorker(QThread):
             output_segmentation_masks=False,
         )
         landmarker = vision.PoseLandmarker.create_from_options(options)
+        if self._log_writer is not None:
+            self._log_writer.start()
 
         cap = self._open_camera()
         if not cap.isOpened():
@@ -136,6 +147,7 @@ class SideCameraWorker(QThread):
             stats['Left shoulder'] = f'Camera {self.camera_index} unavailable'
             self.stats_ready.emit(stats)
             landmarker.close()
+            self._stop_log_writer()
             return
 
         upd_interval = 0.5
@@ -177,6 +189,14 @@ class SideCameraWorker(QThread):
                         coords, raw = extract_posture(pose_lm)
                         if coords is not None:
                             display_stats.update(coords)
+                        if raw is not None and self._log_writer is not None:
+                            # Hidden joints go in as NULL rather than being
+                            # skipped, so the gaps stay visible in the data.
+                            record = (self.session_user_id, datetime.now()) + raw + (
+                                count_visible(pose_lm),
+                                1 if good_frame else 0,
+                            )
+                            self._log_writer.enqueue(record)
                     stats.update(display_stats)
                     stats['Landmarks detected (/33)'] = str(count_visible(pose_lm))
                     break
@@ -199,3 +219,4 @@ class SideCameraWorker(QThread):
 
         cap.release()
         landmarker.close()
+        self._stop_log_writer()
