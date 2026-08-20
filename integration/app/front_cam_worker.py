@@ -8,6 +8,7 @@ from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
+from datetime import datetime
 
 MODEL = Path(__file__).resolve().parent.parent / 'head_pose' / 'face_landmarker.task'
 
@@ -89,6 +90,7 @@ class FrontCamWorker(QThread):
 
     frame_ready = Signal(QImage)
     stats_ready = Signal(dict)
+    record_ready = Signal(tuple) 
 
     def __init__(self, camera_index=0, session_user_id=None, parent=None):
         super().__init__(parent)
@@ -170,6 +172,7 @@ class FrontCamWorker(QThread):
                 'Head Direction': '--', 'Yaw': '--', 'Pitch': '--', 'Roll': '--',
                 'Landmarks': '--',
             }
+            captured_at = datetime.now()
 
             if result.face_landmarks:
                 lm = result.face_landmarks[0]
@@ -239,6 +242,8 @@ class FrontCamWorker(QThread):
                 stats['V Direction'] = v_dir
 
                 # --- Head pose ---
+                yaw = pitch = roll = None
+                head_dir = None
                 if result.facial_transformation_matrixes:
                     R = np.array(result.facial_transformation_matrixes[0])[:3, :3]
                     sy = math.sqrt(R[0, 0] ** 2 + R[1, 0] ** 2)
@@ -264,11 +269,36 @@ class FrontCamWorker(QThread):
                 cv2.rectangle(frame, (0, 0), (w, 20), color, -1)
                 cv2.putText(frame, gaze_dir, (10, 16), FONT, 0.5, (255, 255, 255), 1)
 
+                # --- Build the DB record (raw values, not display strings) ---
+                v_direction_db = 'calibrating' if v_dir == 'Calibrating...' else v_dir.lower()
+                record = (
+                    self.session_user_id,
+                    captured_at,
+                    h_dir.lower(),
+                    v_direction_db,
+                    float(self._prev_h),
+                    float(avg_open),
+                    None,                       # is_blinking — not detected yet
+                    yaw, pitch, roll,
+                    head_dir,
+                    len(lm),
+                    1,                          # signal_ok
+                )
+            else:
+                # No face this frame — log a gap rather than silently dropping it
+                record = (
+                    self.session_user_id, captured_at,
+                    None, None, None, None, None,
+                    None, None, None, None,
+                    None, 0,
+                )
+
             rgb_out = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             h, w = rgb_out.shape[:2]
             qimg = QImage(rgb_out.data, w, h, 3 * w, QImage.Format_RGB888).copy()
             self.frame_ready.emit(qimg)
             self.stats_ready.emit(stats)
+            self.record_ready.emit(record)
 
         cap.release()
         landmarker.close()

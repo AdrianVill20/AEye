@@ -9,6 +9,7 @@ from gaze_worker import GazeWorker
 from posture_worker import SideCameraWorker
 from headpose_worker import HeadPoseWorker
 from front_cam_worker import FrontCamWorker
+from front_cam_logger import FrontCamLogWriter  
 
 class LoginView(QWidget):
 
@@ -150,7 +151,8 @@ class CameraSection(QWidget):
     def __init__(self, title, worker_class, default_index=0):
         super().__init__()
         self.worker_class = worker_class   # GazeWorker or SideCameraWorker
-        self.worker = None                 # the running worker, created on Start
+        self.worker = None
+        self.log_writer = None                  # the running worker, created on Start
 
         layout = QVBoxLayout(self)
 
@@ -203,6 +205,16 @@ class CameraSection(QWidget):
         self.worker = self.worker_class(camera_index=camera_index, session_user_id=user_id)
         self.worker.frame_ready.connect(self._show_frame)
         self.worker.stats_ready.connect(self._show_status)
+
+        # Only FrontCamWorker emits record_ready (raw values for DB logging).
+        # Other worker types (GazeWorker, SideCameraWorker) don't have this
+        # signal, so guard with hasattr rather than connecting blindly.
+        self.log_writer = None
+        if hasattr(self.worker, 'record_ready'):
+            self.log_writer = FrontCamLogWriter()
+            self.log_writer.start()
+            self.worker.record_ready.connect(self.log_writer.enqueue)
+
         self.worker.start()
 
         self.index_box.setEnabled(False)   # can't change camera while running
@@ -213,6 +225,10 @@ class CameraSection(QWidget):
             self.worker.stop()
             self.worker.wait()
             self.worker = None
+        if self.log_writer is not None:
+            self.log_writer.stop()
+            self.log_writer.wait()
+            self.log_writer = None
         self.index_box.setEnabled(True)
         self.button.setText('Start')
 

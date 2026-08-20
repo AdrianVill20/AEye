@@ -2,15 +2,15 @@ import queue
 from PySide6.QtCore import QThread
 from db_config import get_connection
 
-GAZE_INSERT_SQL = (
+HEAD_POSE_INSERT_SQL = (
     "INSERT INTO gaze_logs "
-    "(session_user_id, captured_at, source, h_direction, v_direction, "
-    "h_ratio, v_openness, is_blinking) "
-    "VALUES (%s, %s, 'eye_gaze', %s, %s, %s, %s, %s)"
+    "(session_user_id, captured_at, source, yaw, pitch, roll, "
+    "head_h_direction, head_v_direction, landmarks_detected, signal_ok) "
+    "VALUES (%s, %s, 'head_pose', %s, %s, %s, %s, %s, %s, %s)"
 )
 
 
-class GazeLogWriter(QThread):
+class HeadPoseLogWriter(QThread):
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -18,8 +18,9 @@ class GazeLogWriter(QThread):
         self._running = False
 
     def enqueue(self, record):
-        """record = (session_user_id, captured_at, h_direction, v_direction,
-                      h_ratio, v_openness, is_blinking)"""
+        """record = (session_user_id, captured_at, yaw, pitch, roll,
+                      head_h_direction, head_v_direction,
+                      landmarks_detected, signal_ok)"""
         self._queue.put(record)
 
     def stop(self):
@@ -37,7 +38,7 @@ class GazeLogWriter(QThread):
             if record is None:
                 break
             try:
-                cursor.execute(GAZE_INSERT_SQL, record)
+                cursor.execute(HEAD_POSE_INSERT_SQL, record)
                 conn.commit()
             except Exception as exc:
                 print(f'[DB] Insert failed: {exc}')
