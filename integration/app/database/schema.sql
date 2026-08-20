@@ -63,15 +63,28 @@ CREATE TABLE posture_logs (
 -- Unchanged from v1. This table belongs to the eye-gaze module; nothing writes
 -- to it yet, so expect it to stay empty until that side is wired up.
 
+-- ---------------------------------------------------------------------------
+-- Front camera: eye gaze
+-- ---------------------------------------------------------------------------
+
 DROP TABLE IF EXISTS gaze_logs;
 
 CREATE TABLE gaze_logs (
     id                BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     session_user_id   VARCHAR(64)   NULL,
     captured_at       DATETIME(3)   NOT NULL,
-    direction         ENUM('left', 'center', 'right') NOT NULL,
-    gaze_ratio        FLOAT         NULL,
+
+    -- split out because the worker now tracks them independently
+    h_direction       ENUM('left', 'center', 'right') NOT NULL,
+    v_direction       ENUM('up', 'center', 'down', 'calibrating') NOT NULL,
+
+    h_ratio           FLOAT         NULL,   -- self._prev_h
+    v_openness        FLOAT         NULL,   -- avg_open
+
+    -- not populated yet: current gaze_worker has no blink detection,
+    -- 'Blink' is hardcoded to 'open'. Kept for when that lands.
     is_blinking       TINYINT(1)    NOT NULL DEFAULT 0,
+
     created_at        TIMESTAMP     DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_captured_at (captured_at)
 ) ENGINE=InnoDB;
