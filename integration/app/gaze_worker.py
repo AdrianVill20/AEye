@@ -1,4 +1,3 @@
-import sys
 import time
 from pathlib import Path
 import cv2
@@ -11,8 +10,8 @@ from PySide6.QtGui import QImage
 
 MODEL = Path(__file__).resolve().parent.parent / 'head_pose' / 'face_landmarker.task'
 
-RIGHT_EYE_CONTOUR = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246]
-LEFT_EYE_CONTOUR = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398]
+RIGHT_IRIS_CENTER = 468
+LEFT_IRIS_CENTER = 473
 
 RIGHT_EYE_CORNERS = (33, 133)
 LEFT_EYE_CORNERS = (263, 362)
@@ -22,15 +21,14 @@ RIGHT_LOWER_LIDS = [145, 144, 146, 153]
 LEFT_UPPER_LIDS = [386, 374, 373, 382]
 LEFT_LOWER_LIDS = [374, 373, 372, 380]
 
-FONT = cv2.FONT_HERSHEY_SIMPLEX
-
 H_LEFT_THRESH = 0.42
 H_RIGHT_THRESH = 0.58
 V_UP_THRESHOLD = 0.01
 V_DOWN_THRESHOLD = -0.01
-
 CALIB_FRAMES = 40
 SMOOTHING = 0.3
+
+FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 
 def _ema(prev, new, alpha=SMOOTHING):
@@ -42,41 +40,24 @@ def _avg_val(landmarks, indices, axis, size):
     return np.mean(vals)
 
 
-def _to_px(landmarks, idx, w, h):
-    return int(landmarks[idx].x * w), int(landmarks[idx].y * h)
+def _get_eye_data(landmarks, corners_idx, upper_lids, lower_lids, img_w, img_h):
+    outer_x = landmarks[corners_idx[0]].x * img_w
+    inner_x = landmarks[corners_idx[1]].x * img_w
+    eye_width = inner_x - outer_x
+
+    upper_y = _avg_val(landmarks, upper_lids, 'y', img_h)
+    lower_y = _avg_val(landmarks, lower_lids, 'y', img_h)
+    eye_height = lower_y - upper_y
+
+    openness = eye_height / eye_width if eye_width != 0 else 0.3
+    return eye_width, openness
 
 
-def _pupil_from_eye_region(gray, contour_pts):
-    mask = np.zeros(gray.shape, dtype=np.uint8)
-    cv2.fillPoly(mask, [contour_pts], 255)
-    eye = cv2.bitwise_and(gray, gray, mask=mask)
-
-    x_min, y_min = contour_pts.min(axis=0)
-    x_max, y_max = contour_pts.max(axis=0)
-    crop = eye[y_min:y_max, x_min:x_max]
-    if crop.size == 0:
-        return None
-
-    _, thresh = cv2.threshold(crop, 50, 255, cv2.THRESH_BINARY_INV)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
-
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        return None
-
-    best = max(contours, key=cv2.contourArea)
-    if cv2.contourArea(best) < 20:
-        return None
-
-    M = cv2.moments(best)
-    if M["m00"] == 0:
-        return None
-
-    cx = int(M["m10"] / M["m00"]) + x_min
-    cy = int(M["m01"] / M["m00"]) + y_min
-    return cx, cy
+def _get_h_ratio(landmarks, pupil_px, corners_idx, img_w):
+    outer_x = landmarks[corners_idx[0]].x * img_w
+    inner_x = landmarks[corners_idx[1]].x * img_w
+    eye_width = inner_x - outer_x
+    return (pupil_px[0] - outer_x) / eye_width if eye_width != 0 else 0.5
 
 
 class GazeWorker(QThread):
@@ -156,7 +137,6 @@ class GazeWorker(QThread):
 
             frame = cv2.flip(frame, 1)
             h, w = frame.shape[:2]
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
             mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
@@ -168,29 +148,20 @@ class GazeWorker(QThread):
             if result.face_landmarks:
                 lm = result.face_landmarks[0]
 
-                right_contour = np.array([_to_px(lm, i, w, h) for i in RIGHT_EYE_CONTOUR], dtype=np.int32)
-                left_contour = np.array([_to_px(lm, i, w, h) for i in LEFT_EYE_CONTOUR], dtype=np.int32)
+                r_cx = int(lm[RIGHT_IRIS_CENTER].x * w)
+                r_cy = int(lm[RIGHT_IRIS_CENTER].y * h)
+                l_cx = int(lm[LEFT_IRIS_CENTER].x * w)
+                l_cy = int(lm[LEFT_IRIS_CENTER].y * h)
 
-                r_outer, r_inner = RIGHT_EYE_CORNERS
-                r_outer_px = lm[r_outer].x * w
-                r_inner_px = lm[r_inner].x * w
-                r_eye_width = r_inner_px - r_outer_px
+                cv2.circle(frame, (r_cx, r_cy), 2, (0, 0, 255), -1)
+                cv2.circle(frame, (l_cx, l_cy), 2, (0, 0, 255), -1)
 
-                l_outer, l_inner = LEFT_EYE_CORNERS
-                l_outer_px = lm[l_outer].x * w
-                l_inner_px = lm[l_inner].x * w
-                l_eye_width = l_inner_px - l_outer_px
+                r_ow, r_open = _get_eye_data(lm, RIGHT_EYE_CORNERS,
+                                              RIGHT_UPPER_LIDS, RIGHT_LOWER_LIDS, w, h)
+                l_ow, l_open = _get_eye_data(lm, LEFT_EYE_CORNERS,
+                                              LEFT_UPPER_LIDS, LEFT_LOWER_LIDS, w, h)
 
-                r_pupil = _pupil_from_eye_region(gray, right_contour)
-                l_pupil = _pupil_from_eye_region(gray, left_contour)
-
-                h_ratio = 0.5
-                if r_pupil:
-                    h_ratio = (r_pupil[0] - r_outer_px) / r_eye_width if r_eye_width != 0 else 0.5
-                    cv2.circle(frame, r_pupil, 3, (0, 0, 255), -1)
-                if l_pupil:
-                    cv2.circle(frame, l_pupil, 3, (0, 0, 255), -1)
-
+                h_ratio = _get_h_ratio(lm, (r_cx, r_cy), RIGHT_EYE_CORNERS, w)
                 self._prev_h = _ema(self._prev_h, h_ratio)
 
                 if self._prev_h < H_LEFT_THRESH:
@@ -200,13 +171,6 @@ class GazeWorker(QThread):
                 else:
                     h_dir = "Center"
 
-                r_upper_y = _avg_val(lm, RIGHT_UPPER_LIDS, 'y', h)
-                r_lower_y = _avg_val(lm, RIGHT_LOWER_LIDS, 'y', h)
-                l_upper_y = _avg_val(lm, LEFT_UPPER_LIDS, 'y', h)
-                l_lower_y = _avg_val(lm, LEFT_LOWER_LIDS, 'y', h)
-
-                r_open = (r_lower_y - r_upper_y) / r_eye_width if r_eye_width != 0 else 0.3
-                l_open = (l_lower_y - l_upper_y) / l_eye_width if l_eye_width != 0 else 0.3
                 avg_open = (r_open + l_open) / 2.0
 
                 if self._baseline is None:
@@ -224,16 +188,16 @@ class GazeWorker(QThread):
                         v_dir = "Center"
 
                 direction = f"{v_dir} / {h_dir}"
-                color = (0, 255, 0) if h_dir == "Left" else (0, 0, 255) if h_dir == "Right" else (255, 0, 0)
-
-                cv2.rectangle(frame, (0, 0), (w, 40), color, -1)
-                cv2.putText(frame, direction, (10, 28), FONT, 0.8, (255, 255, 255), 2)
-
-                cv2.polylines(frame, [right_contour], True, (0, 255, 0), 1)
-                cv2.polylines(frame, [left_contour], True, (255, 0, 0), 1)
+                color = (0, 255, 255)
+                cv2.putText(frame, f"Gaze: {h_dir} / {v_dir}", (10, 28), FONT, 0.7, color, 2)
+                cv2.putText(frame, f"h={self._prev_h:.3f} open={r_open:.4f}/{l_open:.4f}",
+                            (10, 55), FONT, 0.6, (200, 200, 200), 1)
+                if self._baseline is not None:
+                    cv2.putText(frame, f"baseline={self._baseline:.4f}",
+                                (10, 80), FONT, 0.5, (150, 150, 150), 1)
 
                 stats['Direction'] = direction
-                stats['Gaze ratio'] = f'h={self._prev_h:.3f} v={avg_open:.4f}'
+                stats['Gaze ratio'] = f'h={self._prev_h:.3f} open={r_open:.4f}/{l_open:.4f}'
                 stats['Blink'] = 'open'
 
             rgb_out = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
