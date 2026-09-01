@@ -148,9 +148,10 @@ class CameraSection(QWidget):
     SideCameraWorker, so the two sections are fully independent.
     """
 
-    def __init__(self, title, worker_class, default_index=0):
+    def __init__(self, title, worker_class, default_index=0, log_to_db=False):
         super().__init__()
         self.worker_class = worker_class   # GazeWorker or SideCameraWorker
+        self.log_to_db = log_to_db         # only SideCameraWorker reads this
         self.worker = None
         self.log_writer = None                  # the running worker, created on Start
 
@@ -202,7 +203,13 @@ class CameraSection(QWidget):
         session = self.window().session                    # who is logged in
         user_id = session.user_id if session else 'test_user'
 
-        self.worker = self.worker_class(camera_index=camera_index, session_user_id=user_id)
+        # SideCameraWorker owns its own DB writer, switched on with log_to_db.
+        # GazeWorker/FrontCamWorker don't accept that argument, so only pass it
+        # to the worker class that supports it.
+        worker_kwargs = dict(camera_index=camera_index, session_user_id=user_id)
+        if self.worker_class is SideCameraWorker:
+            worker_kwargs['log_to_db'] = self.log_to_db
+        self.worker = self.worker_class(**worker_kwargs)
         self.worker.frame_ready.connect(self._show_frame)
         self.worker.stats_ready.connect(self._show_status)
 
@@ -296,7 +303,7 @@ class FrontSideCamTab(QWidget):
         super().__init__()
         layout = QHBoxLayout(self)
         self.front = CameraSection('Front Cam — Gaze + Head Pose', FrontCamWorker, default_index=0)
-        self.side = CameraSection('Side Cam — Posture', SideCameraWorker, default_index=1)
+        self.side = CameraSection('Side Cam — Posture', SideCameraWorker, default_index=1, log_to_db=True)
         layout.addWidget(self.front)
         layout.addWidget(self.side)
 
