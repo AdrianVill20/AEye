@@ -4,9 +4,10 @@ from db_config import get_connection
 
 GAZE_INSERT_SQL = (
     "INSERT INTO gaze_logs "
-    "(session_user_id, captured_at, source, h_direction, v_direction, "
-    "h_ratio, v_openness, is_blinking) "
-    "VALUES (%s, %s, 'eye_gaze', %s, %s, %s, %s, %s)"
+    "(session_user_id, captured_at, h_direction, v_direction, "
+    "h_ratio, v_openness, is_blinking, yaw, pitch, roll, head_direction, "
+    "landmarks_detected, signal_ok) "
+    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
 )
 
 

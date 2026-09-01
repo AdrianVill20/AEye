@@ -78,6 +78,7 @@ class FrontCamWorker(QThread):
 
     frame_ready = Signal(QImage)
     stats_ready = Signal(dict)
+    record_ready = Signal(object)
 
     def __init__(self, camera_index=0, session_user_id=None, parent=None):
         super().__init__(parent)
@@ -242,7 +243,24 @@ class FrontCamWorker(QThread):
 
                     bar_y = 80
                     cv2.putText(frame, head_dir, (10, bar_y), FONT, 0.8, (0, 255, 0), 2)
-                    cv2.putText(frame, f'Y {yaw:+.0f}  P {pitch:+.0f}  R {roll:+.0f}', (10, bar_y + 28), FONT, 0.6, (200, 200, 200), 1)   
+                    cv2.putText(frame, f'Y {yaw:+.0f}  P {pitch:+.0f}  R {roll:+.0f}', (10, bar_y + 28), FONT, 0.6, (200, 200, 200), 1)
+
+                record = (
+                    self.session_user_id,
+                    datetime.now(),
+                    h_dir.lower(),
+                    v_dir.lower() if v_dir != 'Calibrating...' else 'calibrating',
+                    float(self._prev_h),
+                    float(avg_open),
+                    0,
+                    float(yaw) if yaw is not None else None,
+                    float(pitch) if pitch is not None else None,
+                    float(roll) if roll is not None else None,
+                    head_dir,
+                    len(lm),
+                    1,
+                )
+                self.record_ready.emit(record)
 
             rgb_out = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             h, w = rgb_out.shape[:2]

@@ -4,9 +4,9 @@ from db_config import get_connection
 
 HEAD_POSE_INSERT_SQL = (
     "INSERT INTO gaze_logs "
-    "(session_user_id, captured_at, source, yaw, pitch, roll, "
-    "head_h_direction, head_v_direction, landmarks_detected, signal_ok) "
-    "VALUES (%s, %s, 'head_pose', %s, %s, %s, %s, %s, %s, %s)"
+    "(session_user_id, captured_at, h_direction, v_direction, h_ratio, v_openness, "
+    "is_blinking, yaw, pitch, roll, head_direction, landmarks_detected, signal_ok) "
+    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
 )
 
 

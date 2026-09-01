@@ -7,6 +7,7 @@ from keyboard_lock import KeyboardLock
 from views import LoginView, AnalysisDashboard, ProctorView
 from auth import authenticate
 from session import Session
+from db_config import ensure_database
 
 
 class MainWindow(QMainWindow):
@@ -59,6 +60,7 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    ensure_database()
     QApplication.setAttribute(Qt.AA_ShareOpenGLContexts)   # required by Qt WebEngine
     app = QApplication(sys.argv)
     window = MainWindow()
