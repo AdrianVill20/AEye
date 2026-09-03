@@ -76,6 +76,17 @@ def ensure_database():
                 ) ENGINE=InnoDB
             """)
 
+        if 'cheating_events' not in existing:
+            cursor.execute("""
+                CREATE TABLE cheating_events (
+                    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    session_user_id VARCHAR(64) NOT NULL,
+                    detected_at DATETIME(3) NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_user_time (session_user_id, detected_at)
+                ) ENGINE=InnoDB
+            """)
+
         conn.commit()
         cursor.close()
         conn.close()

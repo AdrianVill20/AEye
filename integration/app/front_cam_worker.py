@@ -31,6 +31,10 @@ CALIB_FRAMES = 40
 SMOOTHING = 0.3
 HEAD_TH = 5
 
+# --- Cheat-detection tuning ---
+ALERT_SECONDS = 2.0      # a flag must persist this long before it counts
+PITCH_DOWN_TH = 8        # pitch (deg) above this = looking down at desk / notes
+
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 
@@ -79,11 +83,14 @@ class FrontCamWorker(QThread):
     frame_ready = Signal(QImage)
     stats_ready = Signal(dict)
     record_ready = Signal(object)
+    features_ready = Signal(object)   # per-frame features (for calibration JSON)
+    cheat_detected = Signal(object)   # {'user','timestamp'} on a confirmed episode
 
-    def __init__(self, camera_index=0, session_user_id=None, parent=None):
+    def __init__(self, camera_index=0, session_user_id=None, detect=False, parent=None):
         super().__init__(parent)
         self.camera_index = camera_index
         self.session_user_id = session_user_id
+        self.detect = detect              # run cheat detection this session?
         self._running = False
         self._prev_h = 0.5
         self._calib_openness = []
@@ -123,6 +130,15 @@ class FrontCamWorker(QThread):
         self._prev_h = 0.5
         self._calib_openness = []
         self._baseline = None
+
+        # Cheat-detection state (only used when detect=True). Loads this
+        # student's personal model; if none exists yet, detection stays off.
+        self._detector = None
+        self._anom_since = None
+        self._alert_active = False
+        if self.detect:
+            from cheat_detector import CheatDetector
+            self._detector = CheatDetector.load(self.session_user_id)
 
         options = vision.FaceLandmarkerOptions(
             base_options=mp_python.BaseOptions(model_asset_path=str(MODEL)),
@@ -261,6 +277,52 @@ class FrontCamWorker(QThread):
                     1,
                 )
                 self.record_ready.emit(record)
+
+                # --- Per-frame features (calibration JSON) + cheat detection ---
+                if yaw is not None:
+                    feats = {
+                        'h_ratio': float(self._prev_h),
+                        'v_openness': float(avg_open),
+                        'yaw': float(yaw),
+                        'pitch': float(pitch),
+                        'roll': float(roll),
+                    }
+                    self.features_ready.emit(feats)   # calibration collects these
+
+                    # Detection = personalised MODEL + RULE gate + 2s TIME gate.
+                    if self.detect and self._detector is not None and self._detector.ready:
+                        unusual = self._detector.is_anomaly(
+                            (feats['h_ratio'], feats['v_openness'],
+                             feats['yaw'], feats['pitch'], feats['roll']))
+                        # Rule gate: only count it if the EYES are off the screen -
+                        # looking down (desk/notes) or gaze to a side. A head turn
+                        # with eyes still on screen (thinking) is not cheating.
+                        looking_down = (pitch > PITCH_DOWN_TH) or (v_dir == 'Down')
+                        gaze_to_side = (h_dir != 'Center')
+                        suspicious = unusual and (looking_down or gaze_to_side)
+
+                        now = time.time()
+                        if suspicious:
+                            if self._anom_since is None:
+                                self._anom_since = now
+                            held = now - self._anom_since
+                        else:
+                            self._anom_since = None
+                            held = 0.0
+
+                        if held >= ALERT_SECONDS:
+                            cv2.putText(frame, 'CHEATING DETECTED', (10, h - 20),
+                                        FONT, 0.9, (0, 0, 255), 3)
+                            # Fire ONE event per episode (rising edge), so MySQL
+                            # gets one row per incident, not one per frame.
+                            if not self._alert_active:
+                                self._alert_active = True
+                                self.cheat_detected.emit({
+                                    'user': self.session_user_id,
+                                    'timestamp': datetime.now(),
+                                })
+                        else:
+                            self._alert_active = False
 
             rgb_out = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             h, w = rgb_out.shape[:2]
