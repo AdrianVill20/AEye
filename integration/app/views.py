@@ -3,7 +3,7 @@ import subprocess
 from pathlib import Path
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QFrame, QComboBox, QMdiArea, QMdiSubWindow, QSizePolicy, QStackedWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox
+from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QFrame, QComboBox, QMdiArea, QMdiSubWindow, QSizePolicy, QStackedWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QInputDialog
 REPO_ROOT = Path(__file__).resolve().parent.parent
 from gaze_worker import GazeWorker
 from posture_worker import SideCameraWorker
@@ -374,6 +374,20 @@ class AnalysisDashboard(QWidget):
         toolbar.addWidget(tile_btn)
         toolbar.addWidget(cascade_btn)
 
+        # Power/exit button (far right). Quitting requires a password so a
+        # student can't just close the exam window.
+        exit_btn = QPushButton('X')   # ⏻ power symbol
+        exit_btn.setToolTip('Exit AEye')
+        exit_btn.setFixedWidth(40)
+        exit_btn.setStyleSheet(
+            'QPushButton { color: white; background-color: #c0392b;'
+            ' font-size: 16px; font-weight: bold; border-radius: 4px;'
+            ' padding: 4px; }'
+            ' QPushButton:hover { background-color: #e74c3c; }'
+        )
+        exit_btn.clicked.connect(self._exit_with_password)
+        toolbar.addWidget(exit_btn)
+
         # Toolbar on top, MDI area filling the rest.
         layout = QVBoxLayout(self)
         layout.addLayout(toolbar)
@@ -396,6 +410,21 @@ class AnalysisDashboard(QWidget):
             self.web_tab = WebTab()
         self.web_tab.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         self.web_tab.showFullScreen()
+
+    def _exit_with_password(self):
+        # Ask for the exit password. Only the correct password quits the app;
+        # QApplication.quit() triggers the aboutToQuit cleanup (keyboard hook
+        # removed, workers stopped) wired up in main.py.
+        password, ok = QInputDialog.getText(
+            self, 'Exit AEye', 'Enter password to quit:',
+            QLineEdit.EchoMode.Password,
+        )
+        if not ok:
+            return   # user cancelled the dialog
+        if password == 'quit':
+            QApplication.quit()
+        else:
+            QMessageBox.warning(self, 'Incorrect Password', 'Incorrect password.')
 
     def start_gaze(self):
         if self.gaze_worker is None:
