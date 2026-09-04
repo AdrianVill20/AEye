@@ -1,6 +1,7 @@
 import math
 import time
 from pathlib import Path
+from datetime import datetime
 import cv2
 import numpy as np
 import mediapipe as mp
@@ -11,8 +12,8 @@ from PySide6.QtGui import QImage
 
 MODEL = Path(__file__).resolve().parent.parent / 'head_pose' / 'face_landmarker.task'
 
-RIGHT_EYE_CONTOUR = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246]
-LEFT_EYE_CONTOUR = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398]
+RIGHT_IRIS_CENTER = 468
+LEFT_IRIS_CENTER = 473
 
 RIGHT_EYE_CORNERS = (33, 133)
 LEFT_EYE_CORNERS = (263, 362)
@@ -22,15 +23,15 @@ RIGHT_LOWER_LIDS = [145, 144, 146, 153]
 LEFT_UPPER_LIDS = [386, 374, 373, 382]
 LEFT_LOWER_LIDS = [374, 373, 372, 380]
 
-FONT = cv2.FONT_HERSHEY_SIMPLEX
-
 H_LEFT_THRESH = 0.42
 H_RIGHT_THRESH = 0.58
 V_UP_THRESHOLD = 0.01
 V_DOWN_THRESHOLD = -0.01
 CALIB_FRAMES = 40
 SMOOTHING = 0.3
-HEAD_TH = 10
+HEAD_TH = 5
+
+FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 
 def _ema(prev, new, alpha=SMOOTHING):
@@ -46,49 +47,38 @@ def _to_px(landmarks, idx, w, h):
     return int(landmarks[idx].x * w), int(landmarks[idx].y * h)
 
 
-def _pupil_from_eye_region(gray, contour_pts):
-    mask = np.zeros(gray.shape, dtype=np.uint8)
-    cv2.fillPoly(mask, [contour_pts], 255)
-    eye = cv2.bitwise_and(gray, gray, mask=mask)
+def _get_eye_data(landmarks, corners_idx, upper_lids, lower_lids, img_w, img_h):
+    outer_x = landmarks[corners_idx[0]].x * img_w
+    inner_x = landmarks[corners_idx[1]].x * img_w
+    eye_width = inner_x - outer_x
 
-    x_min, y_min = contour_pts.min(axis=0)
-    x_max, y_max = contour_pts.max(axis=0)
-    crop = eye[y_min:y_max, x_min:x_max]
-    if crop.size == 0:
-        return None
+    upper_y = _avg_val(landmarks, upper_lids, 'y', img_h)
+    lower_y = _avg_val(landmarks, lower_lids, 'y', img_h)
+    eye_height = lower_y - upper_y
 
-    _, thresh = cv2.threshold(crop, 50, 255, cv2.THRESH_BINARY_INV)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+    openness = eye_height / eye_width if eye_width != 0 else 0.3
+    return eye_width, openness
 
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        return None
 
-    best = max(contours, key=cv2.contourArea)
-    if cv2.contourArea(best) < 20:
-        return None
-
-    M = cv2.moments(best)
-    if M["m00"] == 0:
-        return None
-
-    cx = int(M["m10"] / M["m00"]) + x_min
-    cy = int(M["m01"] / M["m00"]) + y_min
-    return cx, cy
+def _get_h_ratio(landmarks, pupil_px, corners_idx, img_w):
+    outer_x = landmarks[corners_idx[0]].x * img_w
+    inner_x = landmarks[corners_idx[1]].x * img_w
+    eye_width = inner_x - outer_x
+    return (pupil_px[0] - outer_x) / eye_width if eye_width != 0 else 0.5
 
 
 class FrontCamWorker(QThread):
-    """Combined eye gaze + head pose on a single front camera.
+    """Combined iris-based eye gaze + head pose on a single front camera.
 
-    Runs FaceLandmarker once per frame, then extracts:
-      - Eye gaze: pupil position (horizontal) + eye openness (vertical)
-      - Head pose: yaw / pitch / roll from the facial transformation matrix
+    Eye gaze follows eye_gaze/sample.py exactly:
+      - Horizontal: iris center (landmark 468/473) relative to eye corners
+      - Vertical: eye openness ratio calibrated against a baseline
+    Head pose: yaw / pitch / roll from the facial transformation matrix
     """
 
     frame_ready = Signal(QImage)
     stats_ready = Signal(dict)
+    record_ready = Signal(object)
 
     def __init__(self, camera_index=0, session_user_id=None, parent=None):
         super().__init__(parent)
@@ -101,6 +91,11 @@ class FrontCamWorker(QThread):
 
     def stop(self):
         self._running = False
+
+    def recalibrate(self):
+        self._prev_h = 0.5
+        self._calib_openness = []
+        self._baseline = None
 
     def _open_camera(self):
         backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
@@ -158,7 +153,6 @@ class FrontCamWorker(QThread):
 
             frame = cv2.flip(frame, 1)
             h, w = frame.shape[:2]
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
             mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
@@ -175,28 +169,21 @@ class FrontCamWorker(QThread):
                 lm = result.face_landmarks[0]
                 stats['Landmarks'] = str(len(lm))
 
-                # --- Eye gaze ---
-                right_contour = np.array([_to_px(lm, i, w, h) for i in RIGHT_EYE_CONTOUR], dtype=np.int32)
-                left_contour = np.array([_to_px(lm, i, w, h) for i in LEFT_EYE_CONTOUR], dtype=np.int32)
+                # --- Eye gaze (iris-based, matching sample.py) ---
+                r_cx = int(lm[RIGHT_IRIS_CENTER].x * w)
+                r_cy = int(lm[RIGHT_IRIS_CENTER].y * h)
+                l_cx = int(lm[LEFT_IRIS_CENTER].x * w)
+                l_cy = int(lm[LEFT_IRIS_CENTER].y * h)
 
-                r_outer_px = lm[RIGHT_EYE_CORNERS[0]].x * w
-                r_inner_px = lm[RIGHT_EYE_CORNERS[1]].x * w
-                r_eye_width = r_inner_px - r_outer_px
+                cv2.circle(frame, (r_cx, r_cy), 2, (0, 0, 255), -1)
+                cv2.circle(frame, (l_cx, l_cy), 2, (0, 0, 255), -1)
 
-                l_outer_px = lm[LEFT_EYE_CORNERS[0]].x * w
-                l_inner_px = lm[LEFT_EYE_CORNERS[1]].x * w
-                l_eye_width = l_inner_px - l_outer_px
+                r_ow, r_open = _get_eye_data(lm, RIGHT_EYE_CORNERS,
+                                              RIGHT_UPPER_LIDS, RIGHT_LOWER_LIDS, w, h)
+                l_ow, l_open = _get_eye_data(lm, LEFT_EYE_CORNERS,
+                                              LEFT_UPPER_LIDS, LEFT_LOWER_LIDS, w, h)
 
-                r_pupil = _pupil_from_eye_region(gray, right_contour)
-                l_pupil = _pupil_from_eye_region(gray, left_contour)
-
-                h_ratio = 0.5
-                if r_pupil:
-                    h_ratio = (r_pupil[0] - r_outer_px) / r_eye_width if r_eye_width != 0 else 0.5
-                    cv2.circle(frame, r_pupil, 3, (0, 0, 255), -1)
-                if l_pupil:
-                    cv2.circle(frame, l_pupil, 3, (0, 0, 255), -1)
-
+                h_ratio = _get_h_ratio(lm, (r_cx, r_cy), RIGHT_EYE_CORNERS, w)
                 self._prev_h = _ema(self._prev_h, h_ratio)
 
                 if self._prev_h < H_LEFT_THRESH:
@@ -206,14 +193,6 @@ class FrontCamWorker(QThread):
                 else:
                     h_dir = "Center"
 
-                # Eye openness
-                r_upper_y = _avg_val(lm, RIGHT_UPPER_LIDS, 'y', h)
-                r_lower_y = _avg_val(lm, RIGHT_LOWER_LIDS, 'y', h)
-                l_upper_y = _avg_val(lm, LEFT_UPPER_LIDS, 'y', h)
-                l_lower_y = _avg_val(lm, LEFT_LOWER_LIDS, 'y', h)
-
-                r_open = (r_lower_y - r_upper_y) / r_eye_width if r_eye_width != 0 else 0.3
-                l_open = (l_lower_y - l_upper_y) / l_eye_width if l_eye_width != 0 else 0.3
                 avg_open = (r_open + l_open) / 2.0
 
                 if self._baseline is None:
@@ -231,14 +210,20 @@ class FrontCamWorker(QThread):
                         v_dir = "Center"
 
                 gaze_dir = f"{v_dir} / {h_dir}"
-                cv2.polylines(frame, [right_contour], True, (0, 255, 0), 1)
-                cv2.polylines(frame, [left_contour], True, (255, 0, 0), 1)
 
                 stats['Gaze Direction'] = gaze_dir
-                stats['H Ratio'] = f'{self._prev_h:.3f}'
+                stats['H Ratio'] = f'h={self._prev_h:.3f} open={r_open:.4f}/{l_open:.4f}'
                 stats['V Direction'] = v_dir
 
+                color = (0, 255, 255)
+                cv2.putText(frame, f"Gaze: {h_dir} / {v_dir}", (10, 28), FONT, 0.7, color, 2)
+                if self._baseline is not None:
+                    cv2.putText(frame, f"baseline={self._baseline:.4f}",
+                                (10, 55), FONT, 0.5, (150, 150, 150), 1)
+
                 # --- Head pose ---
+                yaw = pitch = roll = None
+                head_dir = None
                 if result.facial_transformation_matrixes:
                     R = np.array(result.facial_transformation_matrixes[0])[:3, :3]
                     sy = math.sqrt(R[0, 0] ** 2 + R[1, 0] ** 2)
@@ -256,13 +241,26 @@ class FrontCamWorker(QThread):
                     head_dir = f'looking {words}' if words else 'looking center'
                     stats['Head Direction'] = head_dir
 
-                    cv2.putText(frame, head_dir, (10, 28), FONT, 0.7, (0, 200, 255), 2)
-                    cv2.putText(frame, f'Y {yaw:+.0f} P {pitch:+.0f} R {roll:+.0f}', (10, 55), FONT, 0.6, (0, 255, 0), 1)
+                    bar_y = 80
+                    cv2.putText(frame, head_dir, (10, bar_y), FONT, 0.8, (0, 255, 0), 2)
+                    cv2.putText(frame, f'Y {yaw:+.0f}  P {pitch:+.0f}  R {roll:+.0f}', (10, bar_y + 28), FONT, 0.6, (200, 200, 200), 1)
 
-                # Combined direction bar
-                color = (0, 255, 0) if h_dir == "Left" else (0, 0, 255) if h_dir == "Right" else (255, 0, 0)
-                cv2.rectangle(frame, (0, 0), (w, 20), color, -1)
-                cv2.putText(frame, gaze_dir, (10, 16), FONT, 0.5, (255, 255, 255), 1)
+                record = (
+                    self.session_user_id,
+                    datetime.now(),
+                    h_dir.lower(),
+                    v_dir.lower() if v_dir != 'Calibrating...' else 'calibrating',
+                    float(self._prev_h),
+                    float(avg_open),
+                    0,
+                    float(yaw) if yaw is not None else None,
+                    float(pitch) if pitch is not None else None,
+                    float(roll) if roll is not None else None,
+                    head_dir,
+                    len(lm),
+                    1,
+                )
+                self.record_ready.emit(record)
 
             rgb_out = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             h, w = rgb_out.shape[:2]

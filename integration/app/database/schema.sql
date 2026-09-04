@@ -63,15 +63,49 @@ CREATE TABLE posture_logs (
 -- Unchanged from v1. This table belongs to the eye-gaze module; nothing writes
 -- to it yet, so expect it to stay empty until that side is wired up.
 
+-- ---------------------------------------------------------------------------
+-- Front camera: eye gaze
+-- ---------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
+-- Front camera: eye gaze + head pose
+-- ---------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
+-- Front camera: head pose
+-- ---------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
+-- Front camera: eye gaze + head pose (shared table, one row per reading)
+-- ---------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
+-- Front camera: eye gaze + head pose, combined per frame (FrontCamWorker)
+-- ---------------------------------------------------------------------------
+
 DROP TABLE IF EXISTS gaze_logs;
 
 CREATE TABLE gaze_logs (
     id                BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     session_user_id   VARCHAR(64)   NULL,
     captured_at       DATETIME(3)   NOT NULL,
-    direction         ENUM('left', 'center', 'right') NOT NULL,
-    gaze_ratio        FLOAT         NULL,
-    is_blinking       TINYINT(1)    NOT NULL DEFAULT 0,
+
+    -- eye gaze
+    h_direction       ENUM('left', 'center', 'right') NULL,
+    v_direction       ENUM('up', 'center', 'down', 'calibrating') NULL,
+    h_ratio           FLOAT         NULL,   -- self._prev_h
+    v_openness        FLOAT         NULL,   -- avg_open
+    is_blinking       TINYINT(1)    NULL,   -- not populated yet, no blink detection in worker
+
+    -- head pose
+    yaw               FLOAT         NULL,
+    pitch             FLOAT         NULL,
+    roll              FLOAT         NULL,
+    head_direction    VARCHAR(32)   NULL,   -- e.g. 'looking down left', 'looking center'
+
+    landmarks_detected SMALLINT UNSIGNED NULL,   -- out of 478
+    signal_ok         TINYINT(1)    NOT NULL DEFAULT 0,
+
     created_at        TIMESTAMP     DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_captured_at (captured_at)
+    INDEX idx_session_time (session_user_id, captured_at)
 ) ENGINE=InnoDB;

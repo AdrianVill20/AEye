@@ -3,12 +3,13 @@ import subprocess
 from pathlib import Path
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QFrame, QComboBox, QMdiArea, QMdiSubWindow, QSizePolicy, QStackedWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox
+from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QFrame, QComboBox, QMdiArea, QMdiSubWindow, QSizePolicy, QStackedWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QInputDialog
 REPO_ROOT = Path(__file__).resolve().parent.parent
 from gaze_worker import GazeWorker
 from posture_worker import SideCameraWorker
 from headpose_worker import HeadPoseWorker
 from front_cam_worker import FrontCamWorker
+from front_cam_logger import FrontCamLogWriter  
 
 class LoginView(QWidget):
 
@@ -147,10 +148,12 @@ class CameraSection(QWidget):
     SideCameraWorker, so the two sections are fully independent.
     """
 
-    def __init__(self, title, worker_class, default_index=0):
+    def __init__(self, title, worker_class, default_index=0, log_to_db=False):
         super().__init__()
         self.worker_class = worker_class   # GazeWorker or SideCameraWorker
-        self.worker = None                 # the running worker, created on Start
+        self.log_to_db = log_to_db         # only SideCameraWorker reads this
+        self.worker = None
+        self.log_writer = None                  # the running worker, created on Start
 
         layout = QVBoxLayout(self)
 
@@ -200,9 +203,25 @@ class CameraSection(QWidget):
         session = self.window().session                    # who is logged in
         user_id = session.user_id if session else 'test_user'
 
-        self.worker = self.worker_class(camera_index=camera_index, session_user_id=user_id)
+        # SideCameraWorker owns its own DB writer, switched on with log_to_db.
+        # GazeWorker/FrontCamWorker don't accept that argument, so only pass it
+        # to the worker class that supports it.
+        worker_kwargs = dict(camera_index=camera_index, session_user_id=user_id)
+        if self.worker_class is SideCameraWorker:
+            worker_kwargs['log_to_db'] = self.log_to_db
+        self.worker = self.worker_class(**worker_kwargs)
         self.worker.frame_ready.connect(self._show_frame)
         self.worker.stats_ready.connect(self._show_status)
+
+        # Only FrontCamWorker emits record_ready (raw values for DB logging).
+        # Other worker types (GazeWorker, SideCameraWorker) don't have this
+        # signal, so guard with hasattr rather than connecting blindly.
+        self.log_writer = None
+        if hasattr(self.worker, 'record_ready'):
+            self.log_writer = FrontCamLogWriter()
+            self.log_writer.start()
+            self.worker.record_ready.connect(self.log_writer.enqueue)
+
         self.worker.start()
 
         self.index_box.setEnabled(False)   # can't change camera while running
@@ -213,6 +232,10 @@ class CameraSection(QWidget):
             self.worker.stop()
             self.worker.wait()
             self.worker = None
+        if self.log_writer is not None:
+            self.log_writer.stop()
+            self.log_writer.wait()
+            self.log_writer = None
         self.index_box.setEnabled(True)
         self.button.setText('Start')
 
@@ -280,7 +303,7 @@ class FrontSideCamTab(QWidget):
         super().__init__()
         layout = QHBoxLayout(self)
         self.front = CameraSection('Front Cam — Gaze + Head Pose', FrontCamWorker, default_index=0)
-        self.side = CameraSection('Side Cam — Posture', SideCameraWorker, default_index=1)
+        self.side = CameraSection('Side Cam — Posture', SideCameraWorker, default_index=1, log_to_db=True)
         layout.addWidget(self.front)
         layout.addWidget(self.side)
 
@@ -351,6 +374,20 @@ class AnalysisDashboard(QWidget):
         toolbar.addWidget(tile_btn)
         toolbar.addWidget(cascade_btn)
 
+        # Power/exit button (far right). Quitting requires a password so a
+        # student can't just close the exam window.
+        exit_btn = QPushButton('X')   # ⏻ power symbol
+        exit_btn.setToolTip('Exit AEye')
+        exit_btn.setFixedWidth(40)
+        exit_btn.setStyleSheet(
+            'QPushButton { color: white; background-color: #c0392b;'
+            ' font-size: 16px; font-weight: bold; border-radius: 4px;'
+            ' padding: 4px; }'
+            ' QPushButton:hover { background-color: #e74c3c; }'
+        )
+        exit_btn.clicked.connect(self._exit_with_password)
+        toolbar.addWidget(exit_btn)
+
         # Toolbar on top, MDI area filling the rest.
         layout = QVBoxLayout(self)
         layout.addLayout(toolbar)
@@ -373,6 +410,21 @@ class AnalysisDashboard(QWidget):
             self.web_tab = WebTab()
         self.web_tab.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         self.web_tab.showFullScreen()
+
+    def _exit_with_password(self):
+        # Ask for the exit password. Only the correct password quits the app;
+        # QApplication.quit() triggers the aboutToQuit cleanup (keyboard hook
+        # removed, workers stopped) wired up in main.py.
+        password, ok = QInputDialog.getText(
+            self, 'Exit AEye', 'Enter password to quit:',
+            QLineEdit.EchoMode.Password,
+        )
+        if not ok:
+            return   # user cancelled the dialog
+        if password == 'quit':
+            QApplication.quit()
+        else:
+            QMessageBox.warning(self, 'Incorrect Password', 'Incorrect password.')
 
     def start_gaze(self):
         if self.gaze_worker is None:
