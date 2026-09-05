@@ -9,11 +9,12 @@ This folder is the whole app. Open it, run it, done.
 Or, from a terminal at the repo root:
 
 ```powershell
-.\venv\Scripts\python.exe integration\app\main.py
+.\integration\.venv\Scripts\python.exe integration\app\main.py
 ```
 
-Either way it uses **`AEye\venv`** (Python 3.12) — the environment with all the
-dependencies. Running it with any other Python will fail on a missing package.
+Either way it uses **`integration\.venv`** (Python 3.12) — the environment with
+all the dependencies, kept next to the project. Running it with any other Python
+will fail on a missing package.
 
 First time on a new machine, build that environment:
 
@@ -36,7 +37,7 @@ on startup if they are missing.
    - **Train.** The calibration screen prints the exact command when it finishes.
      Run it from `integration/app`:
      ```powershell
-     ..\..\venv\Scripts\python.exe train_cheat_model.py --user <id>
+     ..\.venv\Scripts\python.exe train_cheat_model.py --user <id>
      ```
      That writes `app/models/cheat_model_<id>.joblib`.
    - **Step 2 — Live Tracking.** Press *Proceed to Monitoring*, then
@@ -59,7 +60,7 @@ Sign in as **Proctor** instead to see the alerts table.
 ```
 integration/
    run.bat                 <- double-click to launch
-   setup_env.ps1           <- builds AEye/venv
+   setup_env.ps1           <- builds integration/.venv
    requirements.txt
    README.md               <- this file
    app/

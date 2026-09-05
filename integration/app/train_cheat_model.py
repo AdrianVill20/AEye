@@ -1,10 +1,9 @@
 """Train a student's Isolation Forest model from their calibration JSON.
 
 Usually you don't need this - the calibration screen's "Train Model" button
-does it in-app. To run it manually, use the venv that HAS scikit-learn
-(app_video/.venv), from integration/app:
+does it in-app. To run it manually, from integration/app:
 
-    ../../app_video/.venv/Scripts/python.exe train_cheat_model.py --user ichoy
+    ../.venv/Scripts/python.exe train_cheat_model.py --user ichoy
 """
 
 import argparse
