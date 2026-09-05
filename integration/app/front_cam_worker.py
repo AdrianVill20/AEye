@@ -47,10 +47,6 @@ def _avg_val(landmarks, indices, axis, size):
     return np.mean(vals)
 
 
-def _to_px(landmarks, idx, w, h):
-    return int(landmarks[idx].x * w), int(landmarks[idx].y * h)
-
-
 def _get_eye_data(landmarks, corners_idx, upper_lids, lower_lids, img_w, img_h):
     outer_x = landmarks[corners_idx[0]].x * img_w
     inner_x = landmarks[corners_idx[1]].x * img_w
@@ -61,7 +57,7 @@ def _get_eye_data(landmarks, corners_idx, upper_lids, lower_lids, img_w, img_h):
     eye_height = lower_y - upper_y
 
     openness = eye_height / eye_width if eye_width != 0 else 0.3
-    return eye_width, openness
+    return openness
 
 
 def _get_h_ratio(landmarks, pupil_px, corners_idx, img_w):
@@ -74,7 +70,7 @@ def _get_h_ratio(landmarks, pupil_px, corners_idx, img_w):
 class FrontCamWorker(QThread):
     """Combined iris-based eye gaze + head pose on a single front camera.
 
-    Eye gaze follows eye_gaze/sample.py exactly:
+    Eye gaze:
       - Horizontal: iris center (landmark 468/473) relative to eye corners
       - Vertical: eye openness ratio calibrated against a baseline
     Head pose: yaw / pitch / roll from the facial transformation matrix
@@ -194,10 +190,10 @@ class FrontCamWorker(QThread):
                 cv2.circle(frame, (r_cx, r_cy), 2, (0, 0, 255), -1)
                 cv2.circle(frame, (l_cx, l_cy), 2, (0, 0, 255), -1)
 
-                r_ow, r_open = _get_eye_data(lm, RIGHT_EYE_CORNERS,
-                                              RIGHT_UPPER_LIDS, RIGHT_LOWER_LIDS, w, h)
-                l_ow, l_open = _get_eye_data(lm, LEFT_EYE_CORNERS,
-                                              LEFT_UPPER_LIDS, LEFT_LOWER_LIDS, w, h)
+                r_open = _get_eye_data(lm, RIGHT_EYE_CORNERS,
+                                       RIGHT_UPPER_LIDS, RIGHT_LOWER_LIDS, w, h)
+                l_open = _get_eye_data(lm, LEFT_EYE_CORNERS,
+                                       LEFT_UPPER_LIDS, LEFT_LOWER_LIDS, w, h)
 
                 h_ratio = _get_h_ratio(lm, (r_cx, r_cy), RIGHT_EYE_CORNERS, w)
                 self._prev_h = _ema(self._prev_h, h_ratio)

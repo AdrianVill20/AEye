@@ -1,15 +1,17 @@
 # AEye project dependencies
-# Requires Python 3.13+
+# Requires Python 3.12
 # Install with: pip install -r requirements.txt
 
 PySide6>=6.11
 opencv-python>=4.10
-mediapipe>=0.10.35
-numpy>=2.0
-dlib-bin>=20.0
+mediapipe>=0.10.21
+numpy>=1.26,<2.0
 mysql-connector-python>=9.0
+scikit-learn>=1.5
+joblib>=1.4
 
 # Notes:
-# - dlib-bin is a pre-built wheel (no Visual Studio C++ Build Tools needed).
-# - This project expects the dlib landmark model file in eye_gaze/shape_predictor_68_face_landmarks.dat
+# - scikit-learn + joblib are needed by train_cheat_model.py (training) and
+#   cheat_detector.py (loading the model). Without them detection stays off.
+# - mediapipe 0.10.x needs numpy 1.x, so numpy is pinned below 2.0.
 # - MediaPipe model files are in head_pose/ (face_landmarker.task, pose_landmarker_heavy.task)

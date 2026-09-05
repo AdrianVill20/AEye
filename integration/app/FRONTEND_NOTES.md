@@ -1,5 +1,16 @@
 # AEye Front-End — Study Notes
 
+> ## ⚠️ OUTDATED — kept as study notes, not as a description of the code
+>
+> These notes describe the OLD three-tab architecture (Eye Tracking / Posture /
+> Head Pose, each with its own `AnalysisTab`). That layout is gone. So are
+> `gaze_worker.py`, `headpose_worker.py`, `AnalysisTab` and `CameraSection`.
+>
+> The app now has one flow: `ExamView` -> calibration -> live tracking, and the
+> front camera work all happens in `front_cam_worker.py`. See `../README.md`
+> for the current picture. The Qt concepts below (QThread workers, signals,
+> QStackedWidget) are still accurate and still worth reading.
+
 > My personal notes for the front-end (`integration/app/`). This is the GUI: login,
 > the locked student dashboard, the tabs, and the camera worker threads that paint
 > live video + stats into each tab.

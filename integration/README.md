@@ -1,48 +1,56 @@
 # AEye — Integration
 
-This folder is the **whole integrated app in one place**: your front-end (the
-locked kiosk GUI) plus copies of the teammate code it runs. Open this folder,
-run it, done — you don't need to touch `desktop_client/`, `Revised_Gaze/`, or
-`app_video/` anymore.
-
-> These are **copies**. The originals stay where your teammates keep them; if a
-> teammate updates their code, re-copy their files into `eye_gaze/` or
-> `posture/` here.
+This folder is the whole app. Open it, run it, done.
 
 ## How to run
 
 **Double-click `run.bat`.**
 
-Or, from a terminal:
+Or, from a terminal at the repo root:
 
 ```powershell
-D:\School_Doc\AEye\app_video\.venv\Scripts\python.exe D:\School_Doc\AEye\integration\app\main.py
+.\venv\Scripts\python.exe integration\app\main.py
 ```
 
-Either way it uses **`app_video\.venv`** — the only environment with all the
-dependencies (PySide6 + dlib + opencv + mediapipe). Running it with any other
-Python will fail on a missing package.
+Either way it uses **`AEye\venv`** (Python 3.12) — the environment with all the
+dependencies. Running it with any other Python will fail on a missing package.
+
+First time on a new machine, build that environment:
+
+```powershell
+.\integration\setup_env.ps1
+```
+
+MySQL must be running on `127.0.0.1:3306` with user `root` / password `root`
+(see `app/db_config.py`). The app creates the `aeye_db` database and its tables
+on startup if they are missing.
 
 ## Using the app
 
 1. A sign-in screen appears. Type **any** ID + password (auth is a placeholder),
    pick **Student**, Sign In. The window locks to fullscreen.
-2. Open a tab and click **Start**:
-   - **Eye Tracking** — Christian's dlib gaze. Shows the camera with a
-     red/blue/green banner ("looking right / center / left") + Direction /
-     Gaze ratio / Blink.
-   - **Posture** — Allain's posture. Shows the skeleton + shoulder/wrist coords.
-   - **Head Pose** — MediaPipe FaceLandmarker. Shows the face + live
-     Yaw / Pitch / Roll and the landmark count.
-3. Click **Stop** to turn a tab's camera off.
-4. Exit the locked app with **Ctrl + Shift + Q**.
+2. Click **Front + Side Cam** in the toolbar. That opens the exam flow:
+   - **Step 1 — Calibration.** Read the passage on screen while the front camera
+     records what normal looks like for you. Saves to
+     `app/calibration_data/calibration_<id>.json`.
+   - **Train.** The calibration screen prints the exact command when it finishes.
+     Run it from `integration/app`:
+     ```powershell
+     ..\..\venv\Scripts\python.exe train_cheat_model.py --user <id>
+     ```
+     That writes `app/models/cheat_model_<id>.joblib`.
+   - **Step 2 — Live Tracking.** Press *Proceed to Monitoring*, then
+     *Start Tracking*. The front camera runs detection; the side camera shows
+     posture. Confirmed episodes are written to MySQL.
+3. **Web** opens the e-class exam page fullscreen.
+4. Exit with the red **X** button (password: `quit`) or **Ctrl + Shift + Q**.
+
+Sign in as **Proctor** instead to see the alerts table.
 
 ### ⚠️ Camera notes
-- You currently have **one webcam**, so both Eye Tracking and Posture use
-  camera **0**. **Run only one tab at a time** — stop one before starting the
-  other, or they'll fight over the camera.
-- When you add the real **side camera** for posture, change `camera_index=0`
-  back to `1` in `app/views.py` (method `start_posture`).
+- With **one webcam**, both the front and side workers open camera **0** and will
+  fight over it. Set the side camera back to `camera_index=1` in
+  `app/views.py` (`DetectionView._start`) once the real side camera is plugged in.
 - If a camera shows an **OBS logo**, that's the OBS Virtual Camera on another
   index — not a real webcam.
 
@@ -50,33 +58,53 @@ Python will fail on a missing package.
 
 ```
 integration/
-   run.bat              <- double-click to launch
-   README.md            <- this file
-   app/                 <- YOUR front-end (the GUI)
-      main.py           <- entry point (run this)
-      views.py          <- tabs, Start/Stop buttons, wiring
-      gaze_worker.py    <- runs Christian's gaze on a thread, into the tab
-      posture_worker.py <- runs Allain's posture on a thread, into the tab
-      headpose_worker.py<- head pose (yaw/pitch/roll) via FaceLandmarker
+   run.bat                 <- double-click to launch
+   setup_env.ps1           <- builds AEye/venv
+   requirements.txt
+   README.md               <- this file
+   app/
+      main.py              <- entry point: login -> student / proctor
+      views.py             <- all screens (login, calibration, tracking, proctor)
+      front_cam_worker.py  <- front camera thread: eye gaze + head pose + detection
+      posture_worker.py    <- side camera thread: upper-body posture
+      cheat_detector.py    <- loads the student's Isolation Forest model
+      train_cheat_model.py <- trains it from the calibration JSON (run by hand)
+      calibration_store.py <- reads / writes the calibration JSON
+      front_cam_logger.py  <- gaze_logs writer (batched)
+      posture_logger.py    <- posture_logs writer (batched)
+      cheat_logger.py      <- cheating_events writer (one row per episode)
+      db_config.py         <- MySQL connection + table bootstrap
+      web_tab.py           <- the locked e-class browser window
       auth.py  session.py  keyboard_lock.py
-   eye_gaze/            <- Christian's code (copied from Revised_Gaze/)
-      gaze_core.py                          <- his gaze functions
-      shape_predictor_68_face_landmarks.dat <- his dlib model
-      main.py  blinking.py  threshold.py    <- his originals (reference)
-   posture/             <- Allain's code (copied)
-      pose_common.py       <- his logic, ported to the MediaPipe Tasks API
-      pose_landmarker.task <- pose model
-      posture.py           <- his original (reference)
-   head_pose/           <- head pose model
-      face_landmarker.task <- MediaPipe face model (from app_video/gaze/)
+      calibration_data/    <- per-student calibration JSON
+      models/              <- per-student trained models
+      database/schema.sql  <- reference copy of the schema
+   head_pose/
+      face_landmarker.task       <- MediaPipe face model (478 landmarks)
+      pose_landmarker_heavy.task <- MediaPipe pose model (33 landmarks)
 ```
 
 ## How it fits together (the short version)
 
-- `app/main.py` starts the GUI and the login → student/proctor routing.
-- `app/views.py` builds the tabs. Each detection tab has a **Start/Stop** button
-  that starts a **worker thread**.
-- `app/gaze_worker.py` imports Christian's functions from `eye_gaze/gaze_core.py`,
-  runs his per-frame logic, and paints each frame **into the tab**.
-- `app/posture_worker.py` does the same with Allain's `posture/pose_common.py`.
-- Nothing opens a separate window — everything renders inside the locked kiosk.
+- `main.py` starts the GUI and the login → student/proctor routing.
+- `views.py` builds every screen. `ExamView` is calibration then live tracking.
+- `front_cam_worker.py` reads the front camera, turns each frame into five
+  numbers (`h_ratio`, `v_openness`, `yaw`, `pitch`, `roll`), and paints the frame
+  into the window.
+- During calibration those five numbers are collected into a JSON file.
+  `train_cheat_model.py` fits an Isolation Forest on them — the student's
+  personal "this is normal" model.
+- During tracking, `cheat_detector.py` scores each frame against that model. A
+  flag needs all three: the model says unusual, the eyes are off screen, and it
+  holds for 2 seconds.
+- `posture_worker.py` runs the side camera and logs shoulder/wrist positions.
+  It does **not** feed the detection decision yet.
+- `ProctorView` reads the `cheating_events` table.
+
+## Databases
+
+| Table | Written by | When |
+|---|---|---|
+| `gaze_logs` | `FrontCamLogWriter` | every frame while tracking |
+| `posture_logs` | `PostureLogWriter` | ~2 rows/sec while tracking |
+| `cheating_events` | `CheatEventLogger` | once per confirmed episode |

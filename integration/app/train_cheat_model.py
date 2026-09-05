@@ -1,9 +1,9 @@
 """Train a student's Isolation Forest model from their calibration JSON.
 
 Run AFTER the student finishes calibration (which writes the JSON), from
-integration/app with app_video/.venv:
+integration/app:
 
-    python train_cheat_model.py --user ichoy
+    ../../venv/Scripts/python.exe train_cheat_model.py --user ichoy
 
 The calibration screen shows the exact command with the right --user filled in.
 """

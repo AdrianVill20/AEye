@@ -1,10 +1,13 @@
 -- AEye database schema
 --
+-- REFERENCE ONLY. The app does not run this file. db_config.ensure_database()
+-- creates these same tables on startup and is the authoritative version -
+-- if you change a column here, change it there too.
+--
 -- WARNING: this file is destructive. Each table is dropped before it is created,
 -- so running this wipes everything that was logged before.
 --
--- Run it with:  python integration/app/database/init_db.py
--- (or paste it into MySQL Workbench / the mysql client)
+-- Run it by pasting into MySQL Workbench / the mysql client.
 
 CREATE DATABASE IF NOT EXISTS aeye_db
     CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -15,6 +18,8 @@ USE aeye_db;
 -- ---------------------------------------------------------------------------
 -- Side camera: upper-body posture and hand position
 -- ---------------------------------------------------------------------------
+--
+-- Written by PostureLogWriter, ~2 rows/sec, while DetectionView is tracking.
 --
 -- The x/y columns are NULL-able on purpose. MediaPipe always returns all 33
 -- landmarks, and the hidden ones are interpolated guesses that look exactly like
@@ -57,31 +62,11 @@ CREATE TABLE posture_logs (
 
 
 -- ---------------------------------------------------------------------------
--- Front camera: eye gaze
--- ---------------------------------------------------------------------------
---
--- Unchanged from v1. This table belongs to the eye-gaze module; nothing writes
--- to it yet, so expect it to stay empty until that side is wired up.
-
--- ---------------------------------------------------------------------------
--- Front camera: eye gaze
--- ---------------------------------------------------------------------------
-
--- ---------------------------------------------------------------------------
--- Front camera: eye gaze + head pose
--- ---------------------------------------------------------------------------
-
--- ---------------------------------------------------------------------------
--- Front camera: head pose
--- ---------------------------------------------------------------------------
-
--- ---------------------------------------------------------------------------
--- Front camera: eye gaze + head pose (shared table, one row per reading)
--- ---------------------------------------------------------------------------
-
--- ---------------------------------------------------------------------------
 -- Front camera: eye gaze + head pose, combined per frame (FrontCamWorker)
 -- ---------------------------------------------------------------------------
+--
+-- Written by FrontCamLogWriter, one row per frame (~30/sec, batched), while
+-- DetectionView is tracking.
 
 DROP TABLE IF EXISTS gaze_logs;
 
@@ -108,4 +93,23 @@ CREATE TABLE gaze_logs (
 
     created_at        TIMESTAMP     DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_session_time (session_user_id, captured_at)
+) ENGINE=InnoDB;
+
+
+-- ---------------------------------------------------------------------------
+-- Confirmed cheating episodes (what the proctor sees)
+-- ---------------------------------------------------------------------------
+--
+-- Written by CheatEventLogger, one row per episode (not per frame) once the
+-- model + rule + 2-second hold all agree. ProctorView reads this table.
+
+DROP TABLE IF EXISTS cheating_events;
+
+CREATE TABLE cheating_events (
+    id                BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    session_user_id   VARCHAR(64)   NOT NULL,
+    detected_at       DATETIME(3)   NOT NULL,
+
+    created_at        TIMESTAMP     DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_user_time (session_user_id, detected_at)
 ) ENGINE=InnoDB;

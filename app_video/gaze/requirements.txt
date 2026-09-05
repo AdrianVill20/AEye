@@ -1,7 +1,0 @@
-# AEye eye-gaze module dependencies (Python 3.12)
-# mediapipe is pinned: 0.10.35 uses the Tasks API (the old mp.solutions API
-# was removed), which all the gaze code targets.
-mediapipe==0.10.35
-opencv-python
-scikit-learn
-numpy

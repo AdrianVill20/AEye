@@ -1,5 +1,12 @@
 # Head Pose, Explained Simply 🧠📷
 
+> ## ⚠️ The file this describes was deleted
+>
+> `headpose_worker.py` is gone. The yaw / pitch / roll maths below is unchanged
+> though — it now lives inside `front_cam_worker.py` (search for
+> `facial_transformation_matrixes`), alongside the eye-gaze code. Everything
+> this document explains is still correct; only the filename changed.
+
 > A super-simple walkthrough of [`headpose_worker.py`](headpose_worker.py).
 > Goal: after reading this you can explain, out loud, *exactly* what this file does —
 > no scary words left behind.
