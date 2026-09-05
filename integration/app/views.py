@@ -1,7 +1,7 @@
 import sys
 import subprocess
 from pathlib import Path
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QThread, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QFrame, QComboBox, QMdiArea, QMdiSubWindow, QSizePolicy, QStackedWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QInputDialog, QProgressBar
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -315,15 +315,36 @@ class FrontSideCamTab(QWidget):
         self.side.stop()
 
 
+class TrainWorker(QThread):
+    """Trains a student's model off the UI thread, so the app never freezes
+    while scikit-learn imports and fits. Emits done(result) or failed(msg)."""
+
+    done = Signal(object)    # result dict from train_cheat_model.train()
+    failed = Signal(str)     # error message
+
+    def __init__(self, user, parent=None):
+        super().__init__(parent)
+        self.user = user
+
+    def run(self):
+        try:
+            from train_cheat_model import train   # heavy imports happen here
+            self.done.emit(train(self.user))
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 class CalibrationView(QWidget):
     """Step 1: record a short sample of the student's NORMAL behaviour while
     they read a passage, and save it to JSON (calibration_data/). That JSON is
-    the seed the training script turns into the student's personal model."""
+    the seed the "Train" button (or the training script) turns into the
+    student's personal model."""
 
     def __init__(self, on_proceed=None):
         super().__init__()
         self._on_proceed = on_proceed
         self.worker = None
+        self._trainer = None
         self._samples = []
         self._user_id = None
         self._remaining = 0
@@ -452,12 +473,26 @@ class CalibrationView(QWidget):
         self.duration_box.addItems(['30', '60', '120'])
         self.duration_box.setCurrentText('120')
         controls.addWidget(self.duration_box)
+        cam_lbl = QLabel('Camera:')
+        cam_lbl.setStyleSheet('color: #6b7280;')
+        controls.addWidget(cam_lbl)
+        self.cam_box = QComboBox()
+        self.cam_box.setObjectName('dur')
+        self.cam_box.addItems(['0', '1', '2', '3'])
+        self.cam_box.setCurrentText('0')
+        controls.addWidget(self.cam_box)
         controls.addStretch(1)
         self.start_btn = QPushButton('Start Calibration')
         self.start_btn.setObjectName('primary')
         self.start_btn.setCursor(Qt.PointingHandCursor)
         self.start_btn.clicked.connect(self._start)
         controls.addWidget(self.start_btn)
+        self.train_btn = QPushButton('Train Model')
+        self.train_btn.setObjectName('secondary')
+        self.train_btn.setCursor(Qt.PointingHandCursor)
+        self.train_btn.setEnabled(False)   # enabled once calibration is saved
+        self.train_btn.clicked.connect(self._train)
+        controls.addWidget(self.train_btn)
         self.proceed_btn = QPushButton('Proceed to Monitoring  ▸')
         self.proceed_btn.setObjectName('secondary')
         self.proceed_btn.setCursor(Qt.PointingHandCursor)
@@ -503,7 +538,8 @@ class CalibrationView(QWidget):
         self._samples = []
         # detect=False -> record only. We collect the raw features via
         # features_ready and save them to JSON; nothing is written to MySQL.
-        self.worker = FrontCamWorker(camera_index=0, session_user_id=self._user_id, detect=False)
+        cam = int(self.cam_box.currentText())
+        self.worker = FrontCamWorker(camera_index=cam, session_user_id=self._user_id, detect=False)
         self.worker.frame_ready.connect(self._show_frame)
         self.worker.features_ready.connect(self._collect)
         self.worker.start()
@@ -513,6 +549,7 @@ class CalibrationView(QWidget):
         self.progress.setValue(0)
         self.start_btn.setEnabled(False)
         self.duration_box.setEnabled(False)
+        self.cam_box.setEnabled(False)
         self.cmd_label.setVisible(False)
         self.status.setStyleSheet('color: #4f46e5; font-size: 13px; font-weight: 600;')
         self.status.setText(f'● Recording your normal behaviour…  {self._remaining}s left')
@@ -535,6 +572,7 @@ class CalibrationView(QWidget):
         self.start_btn.setEnabled(True)
         self.start_btn.setText('Re-record')
         self.duration_box.setEnabled(True)
+        self.cam_box.setEnabled(True)
         if len(self._samples) < 100:
             self.status.setStyleSheet('color: #b91c1c; font-size: 13px; font-weight: 600;')
             self.status.setText(
@@ -543,10 +581,37 @@ class CalibrationView(QWidget):
         calibration_store.save(self._user_id, self._samples)
         self.status.setStyleSheet('color: #059669; font-size: 13px; font-weight: 600;')
         self.status.setText(
-            f'✓  Saved {len(self._samples)} samples for “{self._user_id}”.  Train the model, then Proceed:')
-        self.cmd_label.setText(
-            f'& ../../app_video/.venv/Scripts/python.exe train_cheat_model.py --user {self._user_id}')
-        self.cmd_label.setVisible(True)
+            f'✓  Saved {len(self._samples)} samples for “{self._user_id}”.  Now press Train Model.')
+        self.train_btn.setEnabled(True)
+        self.cmd_label.setVisible(False)
+
+    def _train(self):
+        if not self._user_id:
+            session = self.window().session
+            self._user_id = session.user_id if session else 'test_user'
+        self.train_btn.setEnabled(False)
+        self.start_btn.setEnabled(False)
+        self.status.setStyleSheet('color: #4f46e5; font-size: 13px; font-weight: 600;')
+        self.status.setText(f'⏳  Training model for “{self._user_id}”…')
+        self._trainer = TrainWorker(self._user_id)
+        self._trainer.done.connect(self._train_done)
+        self._trainer.failed.connect(self._train_failed)
+        self._trainer.start()
+
+    def _train_done(self, result):
+        self.train_btn.setEnabled(True)
+        self.start_btn.setEnabled(True)
+        pct = 100 * result['flagged'] / result['samples'] if result['samples'] else 0
+        self.status.setStyleSheet('color: #059669; font-size: 13px; font-weight: 600;')
+        self.status.setText(
+            f'✓  Model trained on {result["samples"]} samples '
+            f'({pct:.0f}% flagged as unusual).  Proceed to Monitoring ▸')
+
+    def _train_failed(self, msg):
+        self.train_btn.setEnabled(True)
+        self.start_btn.setEnabled(True)
+        self.status.setStyleSheet('color: #b91c1c; font-size: 13px; font-weight: 600;')
+        self.status.setText(f'Training failed: {msg}')
 
     def _proceed(self):
         self._stop_worker()
@@ -567,6 +632,8 @@ class CalibrationView(QWidget):
         if self._timer.isActive():
             self._timer.stop()
         self._stop_worker()
+        if self._trainer is not None and self._trainer.isRunning():
+            self._trainer.wait()
 
 
 class DetectionView(QWidget):
@@ -587,6 +654,23 @@ class DetectionView(QWidget):
         heading.setStyleSheet('font-weight: bold; font-size: 16px;')
         heading.setAlignment(Qt.AlignCenter)
         layout.addWidget(heading)
+
+        # Camera-index pickers (which webcam each feed opens).
+        cams_row = QHBoxLayout()
+        cams_row.addStretch(1)
+        cams_row.addWidget(QLabel('Front cam:'))
+        self.front_box = QComboBox()
+        self.front_box.addItems(['0', '1', '2', '3'])
+        self.front_box.setCurrentText('0')
+        cams_row.addWidget(self.front_box)
+        cams_row.addSpacing(16)
+        cams_row.addWidget(QLabel('Side cam:'))
+        self.side_box = QComboBox()
+        self.side_box.addItems(['0', '1', '2', '3'])
+        self.side_box.setCurrentText('1')
+        cams_row.addWidget(self.side_box)
+        cams_row.addStretch(1)
+        layout.addLayout(cams_row)
 
         feeds = QHBoxLayout()
         self.front_video = QLabel('Front camera')
@@ -625,13 +709,16 @@ class DetectionView(QWidget):
         session = self.window().session
         user_id = session.user_id if session else 'test_user'
 
+        front_idx = int(self.front_box.currentText())
+        side_idx = int(self.side_box.currentText())
+
         # Front cam: cheat detection (model + rule + 2s).
-        self.front = FrontCamWorker(camera_index=0, session_user_id=user_id, detect=True)
+        self.front = FrontCamWorker(camera_index=front_idx, session_user_id=user_id, detect=True)
         self.front.frame_ready.connect(self._show_front)
         self.front.cheat_detected.connect(self._on_cheat)
 
         # Side cam: posture feed only (log_to_db=False -> no continuous MySQL).
-        self.side = SideCameraWorker(camera_index=1, session_user_id=user_id, log_to_db=False)
+        self.side = SideCameraWorker(camera_index=side_idx, session_user_id=user_id, log_to_db=False)
         self.side.frame_ready.connect(self._show_side)
 
         # MySQL writer - only used when a cheat actually fires.
@@ -642,6 +729,8 @@ class DetectionView(QWidget):
         self.side.start()
 
         self._count = 0
+        self.front_box.setEnabled(False)   # can't change cameras mid-session
+        self.side_box.setEnabled(False)
         self.status.setStyleSheet('color: #059669;')
         self.status.setText('● Tracking…  (0 flags)')
         self.button.setText('Stop Tracking')
@@ -674,6 +763,8 @@ class DetectionView(QWidget):
             self.logger.stop()
             self.logger.wait()
             self.logger = None
+        self.front_box.setEnabled(True)
+        self.side_box.setEnabled(True)
         self.button.setText('Start Tracking')
         self.status.setStyleSheet('color: gray;')
         self.status.setText('Stopped.')
