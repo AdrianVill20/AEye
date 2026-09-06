@@ -6,6 +6,7 @@ from front_cam_worker import FrontCamWorker
 from front_cam_logger import FrontCamLogWriter
 import calibration_store
 from cheat_logger import CheatEventLogger
+from gaze_graph import GazeGraph
 from db_config import get_connection
 
 
@@ -431,6 +432,12 @@ class DetectionView(QWidget):
             feeds.addLayout(col)
         layout.addLayout(feeds, stretch=1)
 
+        graph_caption = QLabel('Gaze / head values (z-score, dashed band = normal)')
+        graph_caption.setStyleSheet('color: gray; font-size: 11px;')
+        layout.addWidget(graph_caption)
+        self.graph = GazeGraph()
+        layout.addWidget(self.graph)
+
         self.status = QLabel('Idle. Press Start to begin tracking.')
         self.status.setStyleSheet('color: gray;')
         layout.addWidget(self.status)
@@ -456,6 +463,9 @@ class DetectionView(QWidget):
         self.front = FrontCamWorker(camera_index=front_idx, session_user_id=user_id, detect=True)
         self.front.frame_ready.connect(self._show_front)
         self.front.cheat_detected.connect(self._on_cheat)
+
+        self.graph.set_user(user_id)
+        self.front.features_ready.connect(self.graph.on_features)
 
         # Front cam rows (gaze + head pose, every frame) go to gaze_logs.
         self.front_log = FrontCamLogWriter()
