@@ -1,6 +1,6 @@
 from PySide6.QtCore import Qt, QTimer, QThread, Signal
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QFrame, QComboBox, QMdiArea, QMdiSubWindow, QSizePolicy, QSplitter, QStackedWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QInputDialog, QProgressBar
+from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QFrame, QComboBox, QMdiArea, QMdiSubWindow, QSizePolicy, QSplitter, QStackedWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QInputDialog, QProgressBar, QCheckBox
 from posture_worker import SideCameraWorker
 from front_cam_worker import FrontCamWorker
 from front_cam_logger import FrontCamLogWriter
@@ -419,8 +419,9 @@ class DetectionView(QWidget):
     unless a cheating episode is confirmed - then one row is written and the
     proctor can see it."""
 
-    def __init__(self):
+    def __init__(self, on_back=None):
         super().__init__()
+        self._on_back = on_back
         self.front = None
         self.side = None
         self.front_log = None
@@ -447,6 +448,13 @@ class DetectionView(QWidget):
         self.side_box.setCurrentText('1')
         cams_row.addWidget(self.side_box)
         cams_row.addStretch(1)
+
+        # Checkbox to hide the graph (some proctors only want the feeds).
+        self.graph_check = QCheckBox('Show graph')
+        self.graph_check.setChecked(True)
+        self.graph_check.toggled.connect(self._show_graph)
+        cams_row.addWidget(self.graph_check)
+        cams_row.addStretch(1)
         layout.addLayout(cams_row)
 
         # Splitters, so the proctor can drag the dividers: one between the two
@@ -472,8 +480,8 @@ class DetectionView(QWidget):
             col.addWidget(caption)
             feeds.addWidget(col_box)
 
-        graph_box = QWidget()
-        graph_col = QVBoxLayout(graph_box)
+        self.graph_box = QWidget()
+        graph_col = QVBoxLayout(self.graph_box)
         graph_col.setContentsMargins(0, 0, 0, 0)
         graph_caption = QLabel('Gaze / head values (z-score, dashed band = normal)')
         graph_caption.setStyleSheet('color: gray; font-size: 11px;')
@@ -484,7 +492,7 @@ class DetectionView(QWidget):
         split = QSplitter(Qt.Vertical)
         split.setChildrenCollapsible(False)
         split.addWidget(feeds)
-        split.addWidget(graph_box)
+        split.addWidget(self.graph_box)
         split.setStretchFactor(0, 3)   # cameras get most of the height by default
         split.setStretchFactor(1, 1)
         layout.addWidget(split, stretch=1)
@@ -493,9 +501,23 @@ class DetectionView(QWidget):
         self.status.setStyleSheet('color: gray;')
         layout.addWidget(self.status)
 
+        btn_row = QHBoxLayout()
+        self.back_btn = QPushButton('Back to Calibration')
+        self.back_btn.clicked.connect(self._back)
+        btn_row.addWidget(self.back_btn)
         self.button = QPushButton('Start Tracking')
         self.button.clicked.connect(self._toggle)
-        layout.addWidget(self.button)
+        btn_row.addWidget(self.button, stretch=1)
+        layout.addLayout(btn_row)
+
+    def _back(self):
+        # Cameras must be released before the calibration screen opens one.
+        self.stop_all()
+        if self._on_back is not None:
+            self._on_back()
+
+    def _show_graph(self, on):
+        self.graph_box.setVisible(on)
 
     def _toggle(self):
         if self.front is None:
@@ -590,7 +612,7 @@ class ExamView(QWidget):
         super().__init__()
         self.stack = QStackedWidget()
         self.calib = CalibrationView(on_proceed=self._go_detect)
-        self.detect = DetectionView()
+        self.detect = DetectionView(on_back=self._go_calib)
         self.stack.addWidget(self.calib)     # index 0 (shown first)
         self.stack.addWidget(self.detect)    # index 1
         root = QVBoxLayout(self)
@@ -598,6 +620,9 @@ class ExamView(QWidget):
 
     def _go_detect(self):
         self.stack.setCurrentIndex(1)
+
+    def _go_calib(self):
+        self.stack.setCurrentIndex(0)
 
     def stop_all(self):
         self.calib.stop_all()
