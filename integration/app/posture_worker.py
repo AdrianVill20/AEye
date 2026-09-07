@@ -7,9 +7,11 @@ from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
+from ultralytics import YOLO
 from posture_logger import PostureLogWriter
 
 MODEL = Path(__file__).resolve().parent.parent / 'head_pose' / 'pose_landmarker_heavy.task'
+PHONE_MODEL = Path(__file__).resolve().parent / 'models' / 'yolov8s.pt'
 
 POSE_CONNECTIONS = [
     (11, 12), (11, 13), (13, 15), (12, 14), (14, 16),
@@ -27,6 +29,19 @@ RIGHT_WRIST = 16
 
 MIN_VISIBILITY = 0.5
 LOST_FRAMES = 5
+
+# The wrist is a single point, so pad it out for the box to cover the hand.
+HAND_PAD = 0.07
+
+PHONE_CLASS = 67  # COCO "cell phone"
+PHONE_CONF = 0.35
+PHONE_SIZE = 640
+# Full YOLO on every frame stalls this thread, so it runs every 3rd frame and
+# the last boxes are reused in between.
+PHONE_EVERY = 3
+# A phone has to show up on two detection passes running before it is drawn,
+# which throws away most of the one-off false positives.
+PHONE_HITS = 2
 
 
 def is_visible(landmark):
@@ -76,6 +91,57 @@ def extract_posture(pose_lm):
     raw = (db_values(l_shoulder) + db_values(r_shoulder)
            + db_values(l_wrist) + db_values(r_wrist))
     return coords, raw
+
+
+def extract_wrists(pose_lm):
+    # Normalized 0-1 points so this works at any resolution. A wrist the model
+    # can't see goes in as None rather than a bad guess.
+    l_wrist = pose_lm[LEFT_WRIST]
+    r_wrist = pose_lm[RIGHT_WRIST]
+    return {
+        'lx': l_wrist.x if is_visible(l_wrist) else None,
+        'ly': l_wrist.y if is_visible(l_wrist) else None,
+        'rx': r_wrist.x if is_visible(r_wrist) else None,
+        'ry': r_wrist.y if is_visible(r_wrist) else None,
+    }
+
+
+def _clamp(v):
+    return max(0.0, min(1.0, v))
+
+
+def draw_hands(frame, wrists, w, h):
+    # Box around the wrists the model can see, so it follows the hands.
+    if wrists is None:
+        return
+    xs = []
+    ys = []
+    for xk, yk in (('lx', 'ly'), ('rx', 'ry')):
+        if wrists[xk] is not None and wrists[yk] is not None:
+            xs.append(wrists[xk])
+            ys.append(wrists[yk])
+    if not xs:
+        return
+    p1 = (int(_clamp(min(xs) - HAND_PAD) * w), int(_clamp(min(ys) - HAND_PAD) * h))
+    p2 = (int(_clamp(max(xs) + HAND_PAD) * w), int(_clamp(max(ys) + HAND_PAD) * h))
+    cv2.rectangle(frame, p1, p2, (0, 255, 0), 2)
+
+
+def detect_phones(model, frame):
+    result = model.predict(frame, classes=[PHONE_CLASS], conf=PHONE_CONF,
+                           imgsz=PHONE_SIZE, verbose=False)[0]
+    boxes = []
+    for box in result.boxes:
+        x1, y1, x2, y2 = (int(v) for v in box.xyxy[0])
+        boxes.append((x1, y1, x2, y2, float(box.conf[0])))
+    return boxes
+
+
+def draw_phones(frame, boxes):
+    for x1, y1, x2, y2, conf in boxes:
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+        cv2.putText(frame, f'PHONE {conf:.2f}', (x1, max(y1 - 8, 14)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 
 
 class SideCameraWorker(QThread):
@@ -137,6 +203,7 @@ class SideCameraWorker(QThread):
             output_segmentation_masks=False,
         )
         landmarker = vision.PoseLandmarker.create_from_options(options)
+        phone_model = YOLO(str(PHONE_MODEL))
         if self._log_writer is not None:
             self._log_writer.start()
 
@@ -156,6 +223,9 @@ class SideCameraWorker(QThread):
         lost_count = 0
         read_fails = 0
         timestamp_ms = 0
+        frame_count = 0
+        phone_boxes = []
+        phone_streak = 0
 
         while self._running:
             ret, frame = cap.read()
@@ -167,6 +237,10 @@ class SideCameraWorker(QThread):
             read_fails = 0
 
             frame = cv2.flip(frame, 1)
+            # Phones are detected on this copy, so the pose overlay drawn on
+            # frame below never lands on top of the phone.
+            clean = frame.copy()
+            frame_count += 1
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
             result = landmarker.detect_for_video(mp_image, timestamp_ms)
@@ -174,6 +248,7 @@ class SideCameraWorker(QThread):
 
             stats = self._blank_stats()
             good_frame = False
+            wrists = None
 
             if result.pose_landmarks:
                 for pose_lm in result.pose_landmarks:
@@ -196,9 +271,17 @@ class SideCameraWorker(QThread):
                                 1 if good_frame else 0,
                             )
                             self._log_writer.enqueue(record)
+                    wrists = extract_wrists(pose_lm)
+                    draw_hands(frame, wrists, w, h)
                     stats.update(display_stats)
                     stats['Landmarks detected (/33)'] = str(count_visible(pose_lm))
                     break
+
+            if frame_count % PHONE_EVERY == 0:
+                hits = detect_phones(phone_model, clean)
+                phone_streak = phone_streak + 1 if hits else 0
+                phone_boxes = hits if phone_streak >= PHONE_HITS else []
+            draw_phones(frame, phone_boxes)
 
             if good_frame:
                 lost_count = 0

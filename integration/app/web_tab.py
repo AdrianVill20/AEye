@@ -57,13 +57,31 @@ class WebTab(QWidget):
         self.exit_btn.clicked.connect(self._exit_with_password)
         self.exit_btn.raise_()
 
+        # Back button, floated the same way, just left of the power button.
+        # close() only hides this window, so the dashboard underneath comes
+        # back and the browser keeps whatever page it was on.
+        self.back_btn = QPushButton('← Back', self)
+        self.back_btn.setToolTip('Back to AEye')
+        self.back_btn.setFixedSize(80, 32)
+        self.back_btn.setStyleSheet(
+            'QPushButton { color: white; background-color: #34495e;'
+            ' font-size: 13px; font-weight: bold; border-radius: 4px; }'
+            ' QPushButton:hover { background-color: #4a6b8a; }'
+        )
+        self.back_btn.clicked.connect(self.close)
+        self.back_btn.raise_()
+
     def resizeEvent(self, event):
-        # Keep the exit button pinned to the top-right corner and above the
+        # Keep the two buttons pinned to the top-right corner and above the
         # browser whenever the window size changes (e.g. going full-screen).
         super().resizeEvent(event)
         margin = 10
         self.exit_btn.move(self.width() - self.exit_btn.width() - margin, margin)
+        self.back_btn.move(
+            self.width() - self.exit_btn.width() - self.back_btn.width() - 2 * margin,
+            margin)
         self.exit_btn.raise_()
+        self.back_btn.raise_()
 
     def _exit_with_password(self):
         # Ask for the exit password; only "quit" closes the app.

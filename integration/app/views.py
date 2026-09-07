@@ -1,6 +1,6 @@
 from PySide6.QtCore import Qt, QTimer, QThread, Signal
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QFrame, QComboBox, QMdiArea, QMdiSubWindow, QSizePolicy, QStackedWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QInputDialog, QProgressBar
+from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QFrame, QComboBox, QMdiArea, QMdiSubWindow, QSizePolicy, QSplitter, QStackedWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QInputDialog, QProgressBar
 from posture_worker import SideCameraWorker
 from front_cam_worker import FrontCamWorker
 from front_cam_logger import FrontCamLogWriter
@@ -123,10 +123,41 @@ class ReadingWindow(QWidget):
 
         row = QHBoxLayout()
         row.addStretch(1)
-        cancel = QPushButton('Cancel')
-        cancel.clicked.connect(self.close)
-        row.addWidget(cancel)
+        exit_btn = QPushButton('Exit Calibration')
+        exit_btn.setStyleSheet(
+            'color: #a00000; font-weight: bold; padding: 6px 16px; font-size: 15px;')
+        exit_btn.clicked.connect(self._ask_exit)
+        row.addWidget(exit_btn)
         layout.addLayout(row)
+
+    def keyPressEvent(self, event):
+        # Esc is the other way out - this window is full screen, so there is no
+        # title bar to close it with.
+        if event.key() == Qt.Key_Escape:
+            self._ask_exit()
+        else:
+            super().keyPressEvent(event)
+
+    def _ask_exit(self):
+        # Leaving throws the whole recording away, so ask first - a misclick
+        # here would cost the student the full two minutes.
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle('Exit calibration?')
+        box.setText('Nothing will be saved and no model will be trained. Exit anyway?')
+        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        box.setDefaultButton(QMessageBox.No)
+        # This window forces a white background on everything under it, so the
+        # dialog needs its own colours - on a dark Windows theme the default
+        # text is white and comes out invisible.
+        box.setStyleSheet(
+            'QMessageBox { background: #ffffff; }'
+            'QLabel { color: #111111; font-size: 14px; }'
+            'QPushButton { color: #111111; background: #e8e8e8;'
+            ' border: 1px solid #999999; padding: 5px 20px; }'
+            'QPushButton:hover { background: #d8d8d8; }')
+        if box.exec() == QMessageBox.Yes:
+            self.close()
 
     def set_progress(self, elapsed, remaining):
         self.progress.setValue(elapsed)
@@ -357,17 +388,21 @@ class CalibrationView(QWidget):
             self._reader = None
 
     def _cancel_reading(self):
-        # The student closed the reading window early: stop and reset, save nothing.
+        # The student exited early: stop and reset. Nothing is written - the
+        # JSON is only saved in _finish(), so a cancelled run leaves no file
+        # and no model behind.
         if self._timer.isActive():
             self._timer.stop()
         self._stop_worker()
         self._reader = None            # it is already closing itself
+        self._samples = []             # drop the partial recording
+        self.progress.setValue(0)
         self.start_btn.setEnabled(True)
         self.start_btn.setText('Start Calibration')
         self.duration_box.setEnabled(True)
         self.cam_box.setEnabled(True)
         self.status.setStyleSheet('color: #a00000;')
-        self.status.setText('Calibration cancelled.')
+        self.status.setText('Calibration cancelled - nothing was saved.')
 
     def stop_all(self):
         if self._timer.isActive():
@@ -414,14 +449,20 @@ class DetectionView(QWidget):
         cams_row.addStretch(1)
         layout.addLayout(cams_row)
 
-        feeds = QHBoxLayout()
+        # Splitters, so the proctor can drag the dividers: one between the two
+        # camera feeds, one between the feeds and the graph under them.
+        feeds = QSplitter(Qt.Horizontal)
+        feeds.setChildrenCollapsible(False)   # a feed should never vanish entirely
         self.front_video = QLabel('Front camera')
         self.side_video = QLabel('Side camera')
         for lbl, cap in ((self.front_video, 'Front - Gaze + Head (detection)'),
                          (self.side_video, 'Side - Posture')):
-            col = QVBoxLayout()
+            col_box = QWidget()
+            col = QVBoxLayout(col_box)
+            col.setContentsMargins(0, 0, 0, 0)
             lbl.setAlignment(Qt.AlignCenter)
-            lbl.setMinimumSize(320, 260)
+            # Small minimum, otherwise the splitter cannot shrink a feed.
+            lbl.setMinimumSize(160, 120)
             lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
             lbl.setStyleSheet('background: #0f172a; color: #cbd5e1; border-radius: 8px;')
             caption = QLabel(cap)
@@ -429,14 +470,24 @@ class DetectionView(QWidget):
             caption.setStyleSheet('color: gray; font-size: 11px;')
             col.addWidget(lbl, stretch=1)
             col.addWidget(caption)
-            feeds.addLayout(col)
-        layout.addLayout(feeds, stretch=1)
+            feeds.addWidget(col_box)
 
+        graph_box = QWidget()
+        graph_col = QVBoxLayout(graph_box)
+        graph_col.setContentsMargins(0, 0, 0, 0)
         graph_caption = QLabel('Gaze / head values (z-score, dashed band = normal)')
         graph_caption.setStyleSheet('color: gray; font-size: 11px;')
-        layout.addWidget(graph_caption)
+        graph_col.addWidget(graph_caption)
         self.graph = GazeGraph()
-        layout.addWidget(self.graph)
+        graph_col.addWidget(self.graph, stretch=1)
+
+        split = QSplitter(Qt.Vertical)
+        split.setChildrenCollapsible(False)
+        split.addWidget(feeds)
+        split.addWidget(graph_box)
+        split.setStretchFactor(0, 3)   # cameras get most of the height by default
+        split.setStretchFactor(1, 1)
+        layout.addWidget(split, stretch=1)
 
         self.status = QLabel('Idle. Press Start to begin tracking.')
         self.status.setStyleSheet('color: gray;')
