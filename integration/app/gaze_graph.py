@@ -22,10 +22,21 @@ COLORS = {'h_ratio': QColor(30, 60, 160),
           'yaw': QColor(160, 40, 40),
           'pitch': QColor(30, 110, 60)}
 
+# Smallest movement we count as "one unit" on the graph. Calibration stds are
+# tiny (the student holds still), so dividing by them made a small tilt spike
+# off the chart. Floor them with these instead.
+MIN_STD = {'h_ratio': 0.08, 'yaw': 8.0, 'pitch': 8.0, 'roll': 8.0}
+
 WINDOW_SECONDS = 30
 MAXLEN = 900             # 30 s at 30 fps
 Z_LIMIT = 6.0
 BAND = 2.0
+
+
+def floor_stds(stds):
+    """Never divide by a std smaller than MIN_STD, so small head movement
+    stays small on the graph."""
+    return [max(sd, MIN_STD[k]) for sd, k in zip(stds, KEYS)]
 
 
 def load_baseline(user_id):
@@ -37,7 +48,7 @@ def load_baseline(user_id):
         scaler = joblib.load(cheat_detector.user_model_path(user_id))['scaler']
         means = [float(scaler.mean_[i]) for i in idx]
         stds = [float(scaler.scale_[i]) for i in idx]
-        return means, stds, 'model'
+        return means, floor_stds(stds), 'model'
     except Exception:
         pass
 
@@ -50,7 +61,7 @@ def load_baseline(user_id):
             var = sum((v - m) ** 2 for v in vals) / len(vals)
             means.append(m)
             stds.append(math.sqrt(var))
-        return means, stds, 'calibration'
+        return means, floor_stds(stds), 'calibration'
     except Exception:
         return None
 
@@ -216,7 +227,7 @@ class GazeGraph(QWidget):
             self.values[k].append(max(-Z_LIMIT, min(Z_LIMIT, v)))
 
     def _redraw(self):
-        if not self.times:
+        if not self.times or not self.isVisible():
             return
         self.plot.redraw(self.times, self.values)
         parts = [f'{LABELS[k]} {self.values[k][-1]:.1f}' for k in KEYS]

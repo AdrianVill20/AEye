@@ -9,9 +9,13 @@ numpy>=1.26,<2.0
 mysql-connector-python>=9.0
 scikit-learn>=1.5
 joblib>=1.4
+ultralytics>=8.3
+pygrabber>=0.2  # lists cameras by name in the pickers / side-camera chooser
 
 # Notes:
 # - scikit-learn + joblib are needed by train_cheat_model.py (training) and
 #   cheat_detector.py (loading the model). Without them detection stays off.
+# - ultralytics is the YOLO phone detector on the side cam. First run downloads
+#   yolov8s.pt into integration/app/models/ if it isn't there yet.
 # - mediapipe 0.10.x needs numpy 1.x, so numpy is pinned below 2.0.
 # - MediaPipe model files are in head_pose/ (face_landmarker.task, pose_landmarker_heavy.task)

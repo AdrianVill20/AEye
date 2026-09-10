@@ -1,6 +1,7 @@
+from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, QThread, Signal
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QFrame, QComboBox, QMdiArea, QMdiSubWindow, QSizePolicy, QStackedWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QInputDialog, QProgressBar
+from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QFrame, QComboBox, QMdiArea, QMdiSubWindow, QSizePolicy, QSplitter, QStackedWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QInputDialog, QProgressBar, QCheckBox
 from posture_worker import SideCameraWorker
 from front_cam_worker import FrontCamWorker
 from front_cam_logger import FrontCamLogWriter
@@ -8,6 +9,13 @@ import calibration_store
 from cheat_logger import CheatEventLogger
 from gaze_graph import GazeGraph
 from db_config import get_connection
+from phone_camera import SideCameraDialog, populate_camera_combo, CameraPreview
+
+
+def _combo_index(combo):
+    """Camera index behind the selected item in a name-populated combo."""
+    data = combo.currentData()
+    return data if isinstance(data, int) else 0
 
 
 class LoginView(QWidget):
@@ -123,10 +131,41 @@ class ReadingWindow(QWidget):
 
         row = QHBoxLayout()
         row.addStretch(1)
-        cancel = QPushButton('Cancel')
-        cancel.clicked.connect(self.close)
-        row.addWidget(cancel)
+        exit_btn = QPushButton('Exit Calibration')
+        exit_btn.setStyleSheet(
+            'color: #a00000; font-weight: bold; padding: 6px 16px; font-size: 15px;')
+        exit_btn.clicked.connect(self._ask_exit)
+        row.addWidget(exit_btn)
         layout.addLayout(row)
+
+    def keyPressEvent(self, event):
+        # Esc is the other way out - this window is full screen, so there is no
+        # title bar to close it with.
+        if event.key() == Qt.Key_Escape:
+            self._ask_exit()
+        else:
+            super().keyPressEvent(event)
+
+    def _ask_exit(self):
+        # Leaving throws the whole recording away, so ask first - a misclick
+        # here would cost the student the full two minutes.
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle('Exit calibration?')
+        box.setText('Nothing will be saved and no model will be trained. Exit anyway?')
+        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        box.setDefaultButton(QMessageBox.No)
+        # This window forces a white background on everything under it, so the
+        # dialog needs its own colours - on a dark Windows theme the default
+        # text is white and comes out invisible.
+        box.setStyleSheet(
+            'QMessageBox { background: #ffffff; }'
+            'QLabel { color: #111111; font-size: 14px; }'
+            'QPushButton { color: #111111; background: #e8e8e8;'
+            ' border: 1px solid #999999; padding: 5px 20px; }'
+            'QPushButton:hover { background: #d8d8d8; }')
+        if box.exec() == QMessageBox.Yes:
+            self.close()
 
     def set_progress(self, elapsed, remaining):
         self.progress.setValue(elapsed)
@@ -156,6 +195,7 @@ class CalibrationView(QWidget):
         self._user_id = None
         self._remaining = 0
         self._elapsed = 0
+        self._preview = None      # live face-cam preview shown before recording
 
         card_l = QVBoxLayout(self)
         card_l.setContentsMargins(20, 20, 20, 20)
@@ -219,8 +259,9 @@ class CalibrationView(QWidget):
         controls.addWidget(self.duration_box)
         controls.addWidget(QLabel('Camera:'))
         self.cam_box = QComboBox()
-        self.cam_box.addItems(['0', '1', '2', '3'])
-        self.cam_box.setCurrentText('0')
+        populate_camera_combo(self.cam_box, default_index=0)   # by name, not 0/1/2
+        self.cam_box.setMinimumWidth(170)
+        self.cam_box.currentIndexChanged.connect(self._restart_preview)
         controls.addWidget(self.cam_box)
         controls.addStretch(1)
         self.start_btn = QPushButton('Start Calibration')
@@ -251,9 +292,10 @@ class CalibrationView(QWidget):
         session = self.window().session
         self._user_id = session.user_id if session else 'test_user'
         self._samples = []
+        self._stop_preview()   # hand the camera to the recorder
         # detect=False -> record only. We collect the raw features via
         # features_ready and save them to JSON; nothing is written to MySQL.
-        cam = int(self.cam_box.currentText())
+        cam = _combo_index(self.cam_box)
         self.worker = FrontCamWorker(camera_index=cam, session_user_id=self._user_id, detect=False)
         self.worker.frame_ready.connect(self._show_frame)
         self.worker.features_ready.connect(self._collect)
@@ -295,6 +337,7 @@ class CalibrationView(QWidget):
         self.start_btn.setText('Re-record')
         self.duration_box.setEnabled(True)
         self.cam_box.setEnabled(True)
+        self._restart_preview()   # bring the live camera view back
         if len(self._samples) < 100:
             self.status.setStyleSheet('color: #a00000;')
             self.status.setText(
@@ -336,6 +379,7 @@ class CalibrationView(QWidget):
         self.status.setText(f'Training failed: {msg}')
 
     def _proceed(self):
+        self._stop_preview()
         self._stop_worker()
         if self._on_proceed is not None:
             self._on_proceed()
@@ -350,6 +394,36 @@ class CalibrationView(QWidget):
             self.worker.wait()
             self.worker = None
 
+    def _start_preview(self):
+        # Live view of the selected face camera before recording. Skipped while
+        # a recording is running (the real worker owns the camera then).
+        if self.worker is not None:
+            return
+        self._stop_preview()
+        self._preview = CameraPreview(_combo_index(self.cam_box))
+        self._preview.frame.connect(self._show_frame)
+        self._preview.start()
+
+    def _stop_preview(self):
+        if self._preview is not None:
+            self._preview.stop()
+            self._preview.wait()
+            self._preview = None
+
+    def _restart_preview(self, *args):
+        # Camera changed, or a recording ended: resume the live preview if the
+        # screen is visible and we are not recording.
+        if self.isVisible() and self.worker is None:
+            self._start_preview()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._start_preview()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._stop_preview()
+
     def _close_reader(self):
         if self._reader is not None:
             self._reader._on_cancel = None   # don't fire cancel on a programmatic close
@@ -357,21 +431,27 @@ class CalibrationView(QWidget):
             self._reader = None
 
     def _cancel_reading(self):
-        # The student closed the reading window early: stop and reset, save nothing.
+        # The student exited early: stop and reset. Nothing is written - the
+        # JSON is only saved in _finish(), so a cancelled run leaves no file
+        # and no model behind.
         if self._timer.isActive():
             self._timer.stop()
         self._stop_worker()
         self._reader = None            # it is already closing itself
+        self._samples = []             # drop the partial recording
+        self.progress.setValue(0)
         self.start_btn.setEnabled(True)
         self.start_btn.setText('Start Calibration')
         self.duration_box.setEnabled(True)
         self.cam_box.setEnabled(True)
+        self._restart_preview()
         self.status.setStyleSheet('color: #a00000;')
-        self.status.setText('Calibration cancelled.')
+        self.status.setText('Calibration cancelled - nothing was saved.')
 
     def stop_all(self):
         if self._timer.isActive():
             self._timer.stop()
+        self._stop_preview()
         self._stop_worker()
         self._close_reader()
         if self._trainer is not None and self._trainer.isRunning():
@@ -380,48 +460,67 @@ class CalibrationView(QWidget):
 
 class DetectionView(QWidget):
     """Step 2: live tracking. The FRONT cam runs the personal cheat model
-    (model + rule + 2s); the SIDE cam shows posture. Nothing touches MySQL
-    unless a cheating episode is confirmed - then one row is written and the
-    proctor can see it."""
+    (model + rule + 2s); the SIDE cam shows posture. Each confirmed cheating
+    episode becomes one row in cheating_events (with a screenshot), which the
+    proctor sees."""
 
-    def __init__(self):
+    def __init__(self, on_back=None):
         super().__init__()
+        self._on_back = on_back
         self.front = None
         self.side = None
         self.front_log = None
         self.logger = None
         self._count = 0
+        self._side_idx = 1        # side camera, set via the "Choose side camera" popup
+        self._side_label = ''
 
         layout = QVBoxLayout(self)
         heading = QLabel('Live Tracking')
         heading.setStyleSheet('font-weight: bold; font-size: 18px;')
         layout.addWidget(heading)
 
-        # Camera-index pickers (which webcam each feed opens).
+        # Cameras are picked by NAME. The front (face) cam is a named dropdown;
+        # the side cam is chosen in a popup with a live preview.
         cams_row = QHBoxLayout()
         cams_row.addStretch(1)
         cams_row.addWidget(QLabel('Front cam:'))
         self.front_box = QComboBox()
-        self.front_box.addItems(['0', '1', '2', '3'])
-        self.front_box.setCurrentText('0')
+        populate_camera_combo(self.front_box, default_index=0)
+        self.front_box.setMinimumWidth(150)
         cams_row.addWidget(self.front_box)
         cams_row.addSpacing(16)
-        cams_row.addWidget(QLabel('Side cam:'))
-        self.side_box = QComboBox()
-        self.side_box.addItems(['0', '1', '2', '3'])
-        self.side_box.setCurrentText('1')
-        cams_row.addWidget(self.side_box)
+        self.side_summary = QLabel()
+        self.side_summary.setStyleSheet('color: #334155;')
+        cams_row.addWidget(self.side_summary)
+        self.choose_side_btn = QPushButton('Choose side camera')
+        self.choose_side_btn.clicked.connect(self._choose_side)
+        cams_row.addWidget(self.choose_side_btn)
+        cams_row.addStretch(1)
+
+        # Checkbox to hide the graph (some proctors only want the feeds).
+        self.graph_check = QCheckBox('Show graph')
+        self.graph_check.setChecked(True)
+        self.graph_check.toggled.connect(self._show_graph)
+        cams_row.addWidget(self.graph_check)
         cams_row.addStretch(1)
         layout.addLayout(cams_row)
+        self._update_side_summary()
 
-        feeds = QHBoxLayout()
+        # Splitters, so the proctor can drag the dividers: one between the two
+        # camera feeds, one between the feeds and the graph under them.
+        feeds = QSplitter(Qt.Horizontal)
+        feeds.setChildrenCollapsible(False)   # a feed should never vanish entirely
         self.front_video = QLabel('Front camera')
         self.side_video = QLabel('Side camera')
         for lbl, cap in ((self.front_video, 'Front - Gaze + Head (detection)'),
                          (self.side_video, 'Side - Posture')):
-            col = QVBoxLayout()
+            col_box = QWidget()
+            col = QVBoxLayout(col_box)
+            col.setContentsMargins(0, 0, 0, 0)
             lbl.setAlignment(Qt.AlignCenter)
-            lbl.setMinimumSize(320, 260)
+            # Small minimum, otherwise the splitter cannot shrink a feed.
+            lbl.setMinimumSize(160, 120)
             lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
             lbl.setStyleSheet('background: #0f172a; color: #cbd5e1; border-radius: 8px;')
             caption = QLabel(cap)
@@ -429,22 +528,61 @@ class DetectionView(QWidget):
             caption.setStyleSheet('color: gray; font-size: 11px;')
             col.addWidget(lbl, stretch=1)
             col.addWidget(caption)
-            feeds.addLayout(col)
-        layout.addLayout(feeds, stretch=1)
+            feeds.addWidget(col_box)
 
+        self.graph_box = QWidget()
+        graph_col = QVBoxLayout(self.graph_box)
+        graph_col.setContentsMargins(0, 0, 0, 0)
         graph_caption = QLabel('Gaze / head values (z-score, dashed band = normal)')
         graph_caption.setStyleSheet('color: gray; font-size: 11px;')
-        layout.addWidget(graph_caption)
+        graph_col.addWidget(graph_caption)
         self.graph = GazeGraph()
-        layout.addWidget(self.graph)
+        graph_col.addWidget(self.graph, stretch=1)
+
+        split = QSplitter(Qt.Vertical)
+        split.setChildrenCollapsible(False)
+        split.addWidget(feeds)
+        split.addWidget(self.graph_box)
+        split.setStretchFactor(0, 3)   # cameras get most of the height by default
+        split.setStretchFactor(1, 1)
+        layout.addWidget(split, stretch=1)
 
         self.status = QLabel('Idle. Press Start to begin tracking.')
         self.status.setStyleSheet('color: gray;')
         layout.addWidget(self.status)
 
+        btn_row = QHBoxLayout()
+        self.back_btn = QPushButton('Back to Calibration')
+        self.back_btn.clicked.connect(self._back)
+        btn_row.addWidget(self.back_btn)
         self.button = QPushButton('Start Tracking')
         self.button.clicked.connect(self._toggle)
-        layout.addWidget(self.button)
+        btn_row.addWidget(self.button, stretch=1)
+        layout.addLayout(btn_row)
+
+    def _back(self):
+        # Cameras must be released before the calibration screen opens one.
+        self.stop_all()
+        if self._on_back is not None:
+            self._on_back()
+
+    def _show_graph(self, on):
+        self.graph_box.setVisible(on)
+
+    def _update_side_summary(self):
+        name = self._side_label or f'Camera {self._side_idx}'
+        self.side_summary.setText(f'Side camera:  {name}')
+
+    def _choose_side(self):
+        # Open the name + preview popup; the front (face) cam can't be reused.
+        if self.front is not None:
+            return
+        dlg = SideCameraDialog(self, front_index=_combo_index(self.front_box))
+        dlg.exec()
+        if dlg.selected_index is not None:
+            self._side_idx = dlg.selected_index
+            self._side_label = dlg.selected_label
+            self._update_side_summary()
 
     def _toggle(self):
         if self.front is None:
@@ -456,8 +594,8 @@ class DetectionView(QWidget):
         session = self.window().session
         user_id = session.user_id if session else 'test_user'
 
-        front_idx = int(self.front_box.currentText())
-        side_idx = int(self.side_box.currentText())
+        front_idx = _combo_index(self.front_box)
+        side_idx = self._side_idx
 
         # Front cam: cheat detection (model + rule + 2s).
         self.front = FrontCamWorker(camera_index=front_idx, session_user_id=user_id, detect=True)
@@ -476,6 +614,7 @@ class DetectionView(QWidget):
         # posture_logs (2 rows/sec) so posture has history to train on.
         self.side = SideCameraWorker(camera_index=side_idx, session_user_id=user_id, log_to_db=True)
         self.side.frame_ready.connect(self._show_side)
+        self.side.cheat_detected.connect(self._on_cheat)   # phone flags
 
         # MySQL writer - only used when a cheat actually fires.
         self.logger = CheatEventLogger()
@@ -486,17 +625,20 @@ class DetectionView(QWidget):
 
         self._count = 0
         self.front_box.setEnabled(False)   # can't change cameras mid-session
-        self.side_box.setEnabled(False)
+        self.choose_side_btn.setEnabled(False)
         self.status.setStyleSheet('color: #006600;')
         self.status.setText('Tracking... (0 flags)')
         self.button.setText('Stop Tracking')
 
     def _on_cheat(self, event):
+        if self.logger is None:
+            return   # arrived after tracking stopped; the logger closed the episode
         self.logger.enqueue(event)   # write to MySQL (only happens on a flag)
-        self._count += 1
-        ts = event['timestamp'].strftime('%H:%M:%S')
-        self.status.setStyleSheet('color: #a00000;')
-        self.status.setText(f'Cheating flagged at {ts} (total: {self._count})')
+        if event['kind'] == 'start':
+            self._count += 1
+            ts = event['started_at'].strftime('%H:%M:%S')
+            self.status.setStyleSheet('color: #a00000;')
+            self.status.setText(f"Cheating flagged at {ts} - {event['reason']} (total: {self._count})")
 
     def _show_front(self, qimg):
         self.front_video.setPixmap(QPixmap.fromImage(qimg).scaled(
@@ -524,7 +666,7 @@ class DetectionView(QWidget):
             self.logger.wait()
             self.logger = None
         self.front_box.setEnabled(True)
-        self.side_box.setEnabled(True)
+        self.choose_side_btn.setEnabled(True)
         self.button.setText('Start Tracking')
         self.status.setStyleSheet('color: gray;')
         self.status.setText('Stopped.')
@@ -539,7 +681,7 @@ class ExamView(QWidget):
         super().__init__()
         self.stack = QStackedWidget()
         self.calib = CalibrationView(on_proceed=self._go_detect)
-        self.detect = DetectionView()
+        self.detect = DetectionView(on_back=self._go_calib)
         self.stack.addWidget(self.calib)     # index 0 (shown first)
         self.stack.addWidget(self.detect)    # index 1
         root = QVBoxLayout(self)
@@ -547,6 +689,9 @@ class ExamView(QWidget):
 
     def _go_detect(self):
         self.stack.setCurrentIndex(1)
+
+    def _go_calib(self):
+        self.stack.setCurrentIndex(0)
 
     def stop_all(self):
         self.calib.stop_all()
@@ -655,8 +800,9 @@ class AnalysisDashboard(QWidget):
         self.front_side_tab.stop_all()
 
 class ProctorView(QWidget):
-    """Proctor Mode: the cheating events students' sessions wrote to MySQL,
-    newest first. Refresh to pull the latest; filter by student ID."""
+    """Proctor Mode: the cheating episodes students' sessions wrote to MySQL,
+    newest first, plus the screenshot of the one you click. Refreshes itself
+    every 3 seconds; filter by student ID."""
 
     def __init__(self):
         super().__init__()
@@ -677,17 +823,32 @@ class ProctorView(QWidget):
         controls.addWidget(refresh_btn)
         layout.addLayout(controls)
 
-        self.table = QTableWidget(0, 2)
-        self.table.setHorizontalHeaderLabels(['Student', 'Detected at'])
+        # Alerts table on the left, screenshot of the clicked alert on the right.
+        body = QHBoxLayout()
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(['Student', 'Started', 'Ended', 'Reason'])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
-        layout.addWidget(self.table)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.cellClicked.connect(self._show_screenshot)
+        body.addWidget(self.table, stretch=3)
+        self.preview = QLabel('Click an alert to see its screenshot.')
+        self.preview.setAlignment(Qt.AlignCenter)
+        self.preview.setMinimumSize(320, 240)
+        self.preview.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self.preview.setStyleSheet('background: #0f172a; color: #cbd5e1;')
+        body.addWidget(self.preview, stretch=2)
+        layout.addLayout(body)
 
         self.status = QLabel('')
         self.status.setStyleSheet('color: gray;')
         layout.addWidget(self.status)
 
-        self.refresh()
+        # Pull new alerts every 3 seconds while this screen is open, so a flag
+        # on the student side shows up here without pressing Refresh.
+        self._paths = []   # screenshot path of each table row
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.refresh)
 
     def refresh(self):
         name = self.filter_input.text().strip()
@@ -697,14 +858,12 @@ class ProctorView(QWidget):
             return
         try:
             cur = conn.cursor()
+            sql = ('SELECT session_user_id, started_at, ended_at, reason, screenshot_path '
+                   'FROM cheating_events ')
             if name:
-                cur.execute(
-                    'SELECT session_user_id, detected_at FROM cheating_events '
-                    'WHERE session_user_id = %s ORDER BY detected_at DESC', (name,))
+                cur.execute(sql + 'WHERE session_user_id = %s ORDER BY started_at DESC', (name,))
             else:
-                cur.execute(
-                    'SELECT session_user_id, detected_at FROM cheating_events '
-                    'ORDER BY detected_at DESC')
+                cur.execute(sql + 'ORDER BY started_at DESC')
             rows = cur.fetchall()
             cur.close()
             conn.close()
@@ -713,7 +872,30 @@ class ProctorView(QWidget):
             return
 
         self.table.setRowCount(len(rows))
-        for r, (user, ts) in enumerate(rows):
+        self._paths = []
+        for r, (user, started, ended, reason, path) in enumerate(rows):
+            ended_text = ended.strftime('%H:%M:%S') if ended else 'ongoing'
             self.table.setItem(r, 0, QTableWidgetItem(str(user)))
-            self.table.setItem(r, 1, QTableWidgetItem(str(ts)))
-        self.status.setText(f'{len(rows)} alert(s).')
+            self.table.setItem(r, 1, QTableWidgetItem(started.strftime('%Y-%m-%d %H:%M:%S')))
+            self.table.setItem(r, 2, QTableWidgetItem(ended_text))
+            self.table.setItem(r, 3, QTableWidgetItem(reason or ''))
+            self._paths.append(path)
+        self.status.setText(f'{len(rows)} alert(s). Updates every 3 seconds.')
+
+    def _show_screenshot(self, row, col):
+        path = self._paths[row]
+        full = Path(__file__).resolve().parent / path if path else None
+        if full is None or not full.exists():
+            self.preview.setText('No screenshot for this alert.')
+            return
+        self.preview.setPixmap(QPixmap(str(full)).scaled(
+            self.preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.refresh()
+        self.timer.start(3000)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self.timer.stop()

@@ -1,4 +1,5 @@
 import math
+import re
 import time
 from pathlib import Path
 from datetime import datetime
@@ -11,6 +12,7 @@ from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
 
 MODEL = Path(__file__).resolve().parent.parent / 'head_pose' / 'face_landmarker.task'
+EVIDENCE_DIR = Path(__file__).resolve().parent / 'evidence'
 
 RIGHT_IRIS_CENTER = 468
 LEFT_IRIS_CENTER = 473
@@ -67,6 +69,18 @@ def _get_h_ratio(landmarks, pupil_px, corners_idx, img_w):
     return (pupil_px[0] - outer_x) / eye_width if eye_width != 0 else 0.5
 
 
+def save_screenshot(frame, user, source):
+    """Save the flagged frame as evidence. Returns the path relative to the
+    app folder - that is what goes into cheating_events.screenshot_path.
+    source ('gaze' / 'phone') is in the name so two cameras flagging in the
+    same second don't overwrite each other's file."""
+    EVIDENCE_DIR.mkdir(exist_ok=True)
+    safe = re.sub(r'[^A-Za-z0-9_-]+', '_', str(user))
+    name = f'{safe}_{source}_{datetime.now():%Y%m%d_%H%M%S}.jpg'
+    cv2.imwrite(str(EVIDENCE_DIR / name), frame)
+    return f'evidence/{name}'
+
+
 class FrontCamWorker(QThread):
     """Combined iris-based eye gaze + head pose on a single front camera.
 
@@ -80,7 +94,7 @@ class FrontCamWorker(QThread):
     stats_ready = Signal(dict)
     record_ready = Signal(object)
     features_ready = Signal(object)   # per-frame features (for calibration JSON)
-    cheat_detected = Signal(object)   # {'user','timestamp'} on a confirmed episode
+    cheat_detected = Signal(object)   # {'kind': 'start', ...} or {'kind': 'end', ...} per episode
 
     def __init__(self, camera_index=0, session_user_id=None, detect=False, parent=None):
         super().__init__(parent)
@@ -309,16 +323,24 @@ class FrontCamWorker(QThread):
                         if held >= ALERT_SECONDS:
                             cv2.putText(frame, 'CHEATING DETECTED', (10, h - 20),
                                         FONT, 0.9, (0, 0, 255), 3)
-                            # Fire ONE event per episode (rising edge), so MySQL
-                            # gets one row per incident, not one per frame.
+                            # Fire ONE start event per episode (rising edge), so
+                            # MySQL gets one row per incident, not one per frame.
                             if not self._alert_active:
                                 self._alert_active = True
+                                reason = 'looking down' if looking_down else f'gaze {h_dir.lower()}'
                                 self.cheat_detected.emit({
+                                    'kind': 'start',
+                                    'source': 'gaze',
                                     'user': self.session_user_id,
-                                    'timestamp': datetime.now(),
+                                    # when the behaviour began, not when the 2s hold ran out
+                                    'started_at': datetime.fromtimestamp(self._anom_since),
+                                    'reason': reason,
+                                    'screenshot': save_screenshot(frame, self.session_user_id, 'gaze'),
                                 })
-                        else:
+                        elif self._alert_active:
+                            # Back to normal - close the episode.
                             self._alert_active = False
+                            self.cheat_detected.emit({'kind': 'end', 'source': 'gaze', 'ended_at': datetime.now()})
 
             rgb_out = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             h, w = rgb_out.shape[:2]
