@@ -50,9 +50,9 @@ class MainWindow(QMainWindow):
         # Show the dashboard, then lock down: on-top + keyboard hook +
         # fullscreen (no Alt+Tab / Windows key / Alt+F4).
         self.stack.setCurrentWidget(self.student_view)
-        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
-        self.lock.install()
-        self.showFullScreen()
+        # self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        # self.lock.install()
+        # self.showFullScreen()
 
     def enter_proctor_mode(self):
         self.stack.setCurrentWidget(self.proctor_view)

@@ -8,6 +8,19 @@ import calibration_store
 from cheat_logger import CheatEventLogger
 from gaze_graph import GazeGraph
 from db_config import get_connection
+from phone_camera import PhoneCameraDialog
+
+
+def _open_phone_setup(parent, combo):
+    """Open the Iriun phone-camera dialog; on confirm, point `combo` at the
+    chosen camera index. Leaves `combo` untouched if the user cancels."""
+    dlg = PhoneCameraDialog(parent)
+    dlg.exec()
+    if dlg.selected_index is not None:
+        text = str(dlg.selected_index)
+        if combo.findText(text) < 0:
+            combo.addItem(text)
+        combo.setCurrentText(text)
 
 
 class LoginView(QWidget):
@@ -253,6 +266,10 @@ class CalibrationView(QWidget):
         self.cam_box.addItems(['0', '1', '2', '3'])
         self.cam_box.setCurrentText('0')
         controls.addWidget(self.cam_box)
+        phone_btn = QPushButton('📱 Set up phone camera')
+        phone_btn.setToolTip('Use your phone as the camera via Iriun Webcam')
+        phone_btn.clicked.connect(lambda: _open_phone_setup(self, self.cam_box))
+        controls.addWidget(phone_btn)
         controls.addStretch(1)
         self.start_btn = QPushButton('Start Calibration')
         self.start_btn.clicked.connect(self._start)
@@ -447,6 +464,10 @@ class DetectionView(QWidget):
         self.side_box.addItems(['0', '1', '2', '3'])
         self.side_box.setCurrentText('1')
         cams_row.addWidget(self.side_box)
+        phone_btn = QPushButton('📱 Set up phone camera')
+        phone_btn.setToolTip('Use your phone as the side camera via Iriun Webcam')
+        phone_btn.clicked.connect(lambda: _open_phone_setup(self, self.side_box))
+        cams_row.addWidget(phone_btn)
         cams_row.addStretch(1)
 
         # Checkbox to hide the graph (some proctors only want the feeds).
