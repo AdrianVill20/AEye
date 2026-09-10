@@ -50,8 +50,8 @@ def populate_camera_combo(combo, default_index=0):
     return names
 
 
-class _PreviewWorker(QThread):
-    """Reads frames from one camera index for the preview and releases the
+class CameraPreview(QThread):
+    """Reads frames from one camera index for a live preview and releases the
     camera when stopped. Separate from the app's real workers."""
 
     frame = Signal(QImage)
@@ -189,7 +189,7 @@ class SideCameraDialog(QDialog):
         if index is None:
             return
         self.preview.setText('Opening camera ...')
-        self._preview = _PreviewWorker(int(index))
+        self._preview = CameraPreview(int(index))
         self._preview.frame.connect(self._show_frame)
         self._preview.failed.connect(self._preview_failed)
         self._preview.start()

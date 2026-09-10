@@ -9,7 +9,7 @@ import calibration_store
 from cheat_logger import CheatEventLogger
 from gaze_graph import GazeGraph
 from db_config import get_connection
-from phone_camera import SideCameraDialog, populate_camera_combo
+from phone_camera import SideCameraDialog, populate_camera_combo, CameraPreview
 
 
 def _combo_index(combo):
@@ -195,6 +195,7 @@ class CalibrationView(QWidget):
         self._user_id = None
         self._remaining = 0
         self._elapsed = 0
+        self._preview = None      # live face-cam preview shown before recording
 
         card_l = QVBoxLayout(self)
         card_l.setContentsMargins(20, 20, 20, 20)
@@ -260,6 +261,7 @@ class CalibrationView(QWidget):
         self.cam_box = QComboBox()
         populate_camera_combo(self.cam_box, default_index=0)   # by name, not 0/1/2
         self.cam_box.setMinimumWidth(170)
+        self.cam_box.currentIndexChanged.connect(self._restart_preview)
         controls.addWidget(self.cam_box)
         controls.addStretch(1)
         self.start_btn = QPushButton('Start Calibration')
@@ -290,6 +292,7 @@ class CalibrationView(QWidget):
         session = self.window().session
         self._user_id = session.user_id if session else 'test_user'
         self._samples = []
+        self._stop_preview()   # hand the camera to the recorder
         # detect=False -> record only. We collect the raw features via
         # features_ready and save them to JSON; nothing is written to MySQL.
         cam = _combo_index(self.cam_box)
@@ -334,6 +337,7 @@ class CalibrationView(QWidget):
         self.start_btn.setText('Re-record')
         self.duration_box.setEnabled(True)
         self.cam_box.setEnabled(True)
+        self._restart_preview()   # bring the live camera view back
         if len(self._samples) < 100:
             self.status.setStyleSheet('color: #a00000;')
             self.status.setText(
@@ -375,6 +379,7 @@ class CalibrationView(QWidget):
         self.status.setText(f'Training failed: {msg}')
 
     def _proceed(self):
+        self._stop_preview()
         self._stop_worker()
         if self._on_proceed is not None:
             self._on_proceed()
@@ -388,6 +393,36 @@ class CalibrationView(QWidget):
             self.worker.stop()
             self.worker.wait()
             self.worker = None
+
+    def _start_preview(self):
+        # Live view of the selected face camera before recording. Skipped while
+        # a recording is running (the real worker owns the camera then).
+        if self.worker is not None:
+            return
+        self._stop_preview()
+        self._preview = CameraPreview(_combo_index(self.cam_box))
+        self._preview.frame.connect(self._show_frame)
+        self._preview.start()
+
+    def _stop_preview(self):
+        if self._preview is not None:
+            self._preview.stop()
+            self._preview.wait()
+            self._preview = None
+
+    def _restart_preview(self, *args):
+        # Camera changed, or a recording ended: resume the live preview if the
+        # screen is visible and we are not recording.
+        if self.isVisible() and self.worker is None:
+            self._start_preview()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._start_preview()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._stop_preview()
 
     def _close_reader(self):
         if self._reader is not None:
@@ -409,12 +444,14 @@ class CalibrationView(QWidget):
         self.start_btn.setText('Start Calibration')
         self.duration_box.setEnabled(True)
         self.cam_box.setEnabled(True)
+        self._restart_preview()
         self.status.setStyleSheet('color: #a00000;')
         self.status.setText('Calibration cancelled - nothing was saved.')
 
     def stop_all(self):
         if self._timer.isActive():
             self._timer.stop()
+        self._stop_preview()
         self._stop_worker()
         self._close_reader()
         if self._trainer is not None and self._trainer.isRunning():

@@ -46,7 +46,7 @@ class WebTab(QWidget):
         # this widget (not in the layout) so it floats above the browser; its
         # position is kept in the corner by resizeEvent, and raise_() keeps it
         # stacked above the web view.
-        self.exit_btn = QPushButton('⏻', self)   # ⏻ power symbol
+        self.exit_btn = QPushButton('X', self)   # ⏻ power symbol
         self.exit_btn.setToolTip('Exit AEye')
         self.exit_btn.setFixedSize(40, 32)
         self.exit_btn.setStyleSheet(
