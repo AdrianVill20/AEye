@@ -9,6 +9,7 @@ from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
 from ultralytics import YOLO
 from posture_logger import PostureLogWriter
+from front_cam_worker import save_screenshot
 
 MODEL = Path(__file__).resolve().parent.parent / 'head_pose' / 'pose_landmarker_heavy.task'
 PHONE_MODEL = Path(__file__).resolve().parent / 'models' / 'yolov8s.pt'
@@ -42,6 +43,9 @@ PHONE_EVERY = 3
 # A phone has to show up on two detection passes running before it is drawn,
 # which throws away most of the one-off false positives.
 PHONE_HITS = 2
+# A phone flag ends only after no phone has been seen for this long, so one
+# missed detection pass does not split one episode into many rows.
+PHONE_END_SECONDS = 2.0
 
 
 def is_visible(landmark):
@@ -147,6 +151,7 @@ def draw_phones(frame, boxes):
 class SideCameraWorker(QThread):
     frame_ready = Signal(QImage)
     stats_ready = Signal(dict)
+    cheat_detected = Signal(object)   # phone flag start/end, same format as FrontCamWorker
 
     def __init__(self, camera_index=1, session_user_id=None, log_to_db=False, parent=None):
         super().__init__(parent)
@@ -226,6 +231,8 @@ class SideCameraWorker(QThread):
         frame_count = 0
         phone_boxes = []
         phone_streak = 0
+        phone_active = False      # is a phone episode open right now?
+        phone_last_seen = 0.0
 
         while self._running:
             ret, frame = cap.read()
@@ -282,6 +289,27 @@ class SideCameraWorker(QThread):
                 phone_streak = phone_streak + 1 if hits else 0
                 phone_boxes = hits if phone_streak >= PHONE_HITS else []
             draw_phones(frame, phone_boxes)
+
+            # Phone flag: one start event when a phone shows up, one end event
+            # once it has been gone for PHONE_END_SECONDS. Only in the real
+            # tracking session (the one that logs to the database).
+            if self._log_writer is not None:
+                if phone_boxes:
+                    phone_last_seen = time.time()
+                    if not phone_active:
+                        phone_active = True
+                        self.cheat_detected.emit({
+                            'kind': 'start',
+                            'source': 'phone',
+                            'user': self.session_user_id,
+                            'started_at': datetime.now(),
+                            'reason': 'phone detected',
+                            'screenshot': save_screenshot(frame, self.session_user_id, 'phone'),
+                        })
+                elif phone_active and time.time() - phone_last_seen > PHONE_END_SECONDS:
+                    phone_active = False
+                    self.cheat_detected.emit({'kind': 'end', 'source': 'phone',
+                                              'ended_at': datetime.fromtimestamp(phone_last_seen)})
 
             if good_frame:
                 lost_count = 0

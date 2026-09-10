@@ -3,6 +3,9 @@
 A 'start' event inserts the row: who, when it started, why, and the
 screenshot. The matching 'end' event fills in ended_at on that same row.
 Until then ended_at is NULL, which the proctor sees as "ongoing".
+
+Events come from two cameras ('gaze' = front, 'phone' = side). Each source
+keeps its own open row, so a phone ending never closes a gaze episode.
 """
 
 import queue
@@ -24,8 +27,8 @@ class CheatEventLogger(QThread):
         self._queue = queue.Queue()
 
     def enqueue(self, event):
-        """event = {'kind': 'start', 'user', 'started_at', 'reason', 'screenshot'}
-                or {'kind': 'end', 'ended_at'}"""
+        """event = {'kind': 'start', 'source', 'user', 'started_at', 'reason', 'screenshot'}
+                or {'kind': 'end', 'source', 'ended_at'}"""
         self._queue.put(event)
 
     def stop(self):
@@ -36,7 +39,7 @@ class CheatEventLogger(QThread):
         if conn is None:
             return
         cursor = conn.cursor()
-        open_id = None   # id of the row whose episode has not ended yet
+        open_ids = {}   # source -> id of its row whose episode has not ended yet
         while True:
             event = self._queue.get()
             if event is None:
@@ -45,18 +48,17 @@ class CheatEventLogger(QThread):
                 if event['kind'] == 'start':
                     cursor.execute(INSERT_SQL, (event['user'], event['started_at'],
                                                 event['reason'], event['screenshot']))
-                    open_id = cursor.lastrowid
-                elif open_id is not None:
-                    cursor.execute(END_SQL, (event['ended_at'], open_id))
-                    open_id = None
+                    open_ids[event['source']] = cursor.lastrowid
+                elif event['source'] in open_ids:
+                    cursor.execute(END_SQL, (event['ended_at'], open_ids.pop(event['source'])))
                 conn.commit()
                 print(f"[CHEAT] Logged {event['kind']} of episode")
             except Exception as exc:
                 print(f'[DB] Cheat event failed: {exc}')
                 conn.rollback()
-        # Tracking was stopped while still flagged - close the episode now.
-        if open_id is not None:
-            cursor.execute(END_SQL, (datetime.now(), open_id))
-            conn.commit()
+        # Tracking was stopped while still flagged - close those episodes now.
+        for row_id in open_ids.values():
+            cursor.execute(END_SQL, (datetime.now(), row_id))
+        conn.commit()
         cursor.close()
         conn.close()

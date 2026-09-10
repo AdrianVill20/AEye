@@ -614,6 +614,7 @@ class DetectionView(QWidget):
         # posture_logs (2 rows/sec) so posture has history to train on.
         self.side = SideCameraWorker(camera_index=side_idx, session_user_id=user_id, log_to_db=True)
         self.side.frame_ready.connect(self._show_side)
+        self.side.cheat_detected.connect(self._on_cheat)   # phone flags
 
         # MySQL writer - only used when a cheat actually fires.
         self.logger = CheatEventLogger()

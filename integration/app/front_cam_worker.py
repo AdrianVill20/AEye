@@ -69,12 +69,14 @@ def _get_h_ratio(landmarks, pupil_px, corners_idx, img_w):
     return (pupil_px[0] - outer_x) / eye_width if eye_width != 0 else 0.5
 
 
-def save_screenshot(frame, user):
+def save_screenshot(frame, user, source):
     """Save the flagged frame as evidence. Returns the path relative to the
-    app folder - that is what goes into cheating_events.screenshot_path."""
+    app folder - that is what goes into cheating_events.screenshot_path.
+    source ('gaze' / 'phone') is in the name so two cameras flagging in the
+    same second don't overwrite each other's file."""
     EVIDENCE_DIR.mkdir(exist_ok=True)
     safe = re.sub(r'[^A-Za-z0-9_-]+', '_', str(user))
-    name = f'{safe}_{datetime.now():%Y%m%d_%H%M%S}.jpg'
+    name = f'{safe}_{source}_{datetime.now():%Y%m%d_%H%M%S}.jpg'
     cv2.imwrite(str(EVIDENCE_DIR / name), frame)
     return f'evidence/{name}'
 
@@ -328,16 +330,17 @@ class FrontCamWorker(QThread):
                                 reason = 'looking down' if looking_down else f'gaze {h_dir.lower()}'
                                 self.cheat_detected.emit({
                                     'kind': 'start',
+                                    'source': 'gaze',
                                     'user': self.session_user_id,
                                     # when the behaviour began, not when the 2s hold ran out
                                     'started_at': datetime.fromtimestamp(self._anom_since),
                                     'reason': reason,
-                                    'screenshot': save_screenshot(frame, self.session_user_id),
+                                    'screenshot': save_screenshot(frame, self.session_user_id, 'gaze'),
                                 })
                         elif self._alert_active:
                             # Back to normal - close the episode.
                             self._alert_active = False
-                            self.cheat_detected.emit({'kind': 'end', 'ended_at': datetime.now()})
+                            self.cheat_detected.emit({'kind': 'end', 'source': 'gaze', 'ended_at': datetime.now()})
 
             rgb_out = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             h, w = rgb_out.shape[:2]
