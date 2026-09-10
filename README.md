@@ -23,7 +23,7 @@ AEye addresses these gaps directly.
 
 ## Key Features
 
-- **Two-mode desktop application** — a *student mode* for taking exams and a *proctor mode* for monitoring, backed by a central server.
+- **Two-mode desktop application** — a _student mode_ for taking exams and a _proctor mode_ for monitoring, backed by a central server.
 - **Controlled exam window** — displays the school's e-class exam page inside a locked environment, running fullscreen and limiting application switching (functioning like a lockdown browser).
 - **Own login** — students sign in with their school-issued student ID; identity comes from the login rather than biometric face recognition.
 - **Multi-signal detection** — combines eye gaze, head pose, and facial expression instead of relying on eye gaze alone.
@@ -37,24 +37,28 @@ AEye addresses these gaps directly.
 
 ## How It Works
 
-AEye follows an **Input → Process → Output** flow.
+AEye follows an **Input → Process → Output** flow
 
 ### Input
+
 - Student ID (from AEye's own login)
 - Front-facing camera feed (face, eye gaze, head pose, facial landmarks)
 - Elevated side camera feed (upper-body posture, arm and hand movement)
 - Calibration data: areas of interest, environment, and lighting
 
 ### Process
+
 1. **Calibration** — MediaPipe records the student's normal face state, the two areas of interest, and the environment.
 2. **Signal reading** — MediaPipe reads eye gaze, head pose, and facial expression from the front camera; the side camera provides posture and hand movement, checked against the areas of interest.
 3. **Behavior learning** — current signals are compared to the student's saved behavioral profile so personal habits and legitimate actions (like writing within the desk zone) are treated as normal.
 4. **Pattern detection & scoring** — repeating patterns over short time windows feed a sequence-based model (with a simpler time-window rule as a fallback), producing a confidence score with a severity level.
 
 ### Output
+
 Flagged moments — each with a confidence score, severity level, triggering pattern, and time-stamped screenshot — are sent through the central server to proctor mode. The student's behavioral profile is updated after each exam.
 
 ### Feedback Loop
+
 Every completed exam refines the student's behavioral profile, so future sessions have a better sense of what is normal for that student, reducing false alarms over time.
 
 ---
@@ -85,11 +89,13 @@ AEye is intentionally focused. It is important to understand what it does **not*
 ## Project Team
 
 **Authors**
+
 - Christian V. Demetillo
 - Adrian T. Villarte
 - Allain James O. Ybañez
 
 **Adviser**
+
 - Engr. Carmel Tejana
 
 A thesis project presented to the Faculty of the School of Computer Studies, in fulfillment of the requirements for the degree of Bachelor of Science in Computer Science.
@@ -100,13 +106,13 @@ A thesis project presented to the Faculty of the School of Computer Studies, in 
 
 Key works informing AEye's design:
 
-- Atoum et al. (2017) — *Automated Online Exam Proctoring*, IEEE Transactions on Multimedia
+- Atoum et al. (2017) — _Automated Online Exam Proctoring_, IEEE Transactions on Multimedia
 - Dilini et al. (2021) — Eye-gaze cheating detection in browser-based exams
 - Al-Mukhtar et al. (2024) — Deep learning-based multimodal cheating detection
-- Naveen et al. (2025) — *AutoOEP*, a multimodal dual-camera framework
+- Naveen et al. (2025) — _AutoOEP_, a multimodal dual-camera framework
 - Khalil et al. (2025) — Review of deep learning models for exam cheating detection
 - Njeru et al. (2025) — Surveillance and disability in online proctored exams
 - Coghlan et al. (2021) — Ethics of online exam supervision technologies
 - Ansari et al. (2023) — Person-specific gaze estimation from low-quality webcam images
 
-*A full bibliography is available in the thesis manuscript.*
+_A full bibliography is available in the thesis manuscript._
