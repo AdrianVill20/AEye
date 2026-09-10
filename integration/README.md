@@ -108,4 +108,6 @@ integration/
 |---|---|---|
 | `gaze_logs` | `FrontCamLogWriter` | every frame while tracking |
 | `posture_logs` | `PostureLogWriter` | ~2 rows/sec while tracking |
-| `cheating_events` | `CheatEventLogger` | once per confirmed episode |
+| `cheating_events` | `CheatEventLogger` | once per confirmed episode (started_at, ended_at, reason, screenshot_path) |
+
+Evidence screenshots are saved to `app/evidence/` (not committed to git).

@@ -1,3 +1,4 @@
+from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, QThread, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QFrame, QComboBox, QMdiArea, QMdiSubWindow, QSizePolicy, QSplitter, QStackedWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QInputDialog, QProgressBar, QCheckBox
@@ -432,9 +433,9 @@ class CalibrationView(QWidget):
 
 class DetectionView(QWidget):
     """Step 2: live tracking. The FRONT cam runs the personal cheat model
-    (model + rule + 2s); the SIDE cam shows posture. Nothing touches MySQL
-    unless a cheating episode is confirmed - then one row is written and the
-    proctor can see it."""
+    (model + rule + 2s); the SIDE cam shows posture. Each confirmed cheating
+    episode becomes one row in cheating_events (with a screenshot), which the
+    proctor sees."""
 
     def __init__(self, on_back=None):
         super().__init__()
@@ -586,11 +587,14 @@ class DetectionView(QWidget):
         self.button.setText('Stop Tracking')
 
     def _on_cheat(self, event):
+        if self.logger is None:
+            return   # arrived after tracking stopped; the logger closed the episode
         self.logger.enqueue(event)   # write to MySQL (only happens on a flag)
-        self._count += 1
-        ts = event['timestamp'].strftime('%H:%M:%S')
-        self.status.setStyleSheet('color: #a00000;')
-        self.status.setText(f'Cheating flagged at {ts} (total: {self._count})')
+        if event['kind'] == 'start':
+            self._count += 1
+            ts = event['started_at'].strftime('%H:%M:%S')
+            self.status.setStyleSheet('color: #a00000;')
+            self.status.setText(f"Cheating flagged at {ts} - {event['reason']} (total: {self._count})")
 
     def _show_front(self, qimg):
         self.front_video.setPixmap(QPixmap.fromImage(qimg).scaled(
@@ -752,8 +756,9 @@ class AnalysisDashboard(QWidget):
         self.front_side_tab.stop_all()
 
 class ProctorView(QWidget):
-    """Proctor Mode: the cheating events students' sessions wrote to MySQL,
-    newest first. Refresh to pull the latest; filter by student ID."""
+    """Proctor Mode: the cheating episodes students' sessions wrote to MySQL,
+    newest first, plus the screenshot of the one you click. Refreshes itself
+    every 3 seconds; filter by student ID."""
 
     def __init__(self):
         super().__init__()
@@ -774,17 +779,32 @@ class ProctorView(QWidget):
         controls.addWidget(refresh_btn)
         layout.addLayout(controls)
 
-        self.table = QTableWidget(0, 2)
-        self.table.setHorizontalHeaderLabels(['Student', 'Detected at'])
+        # Alerts table on the left, screenshot of the clicked alert on the right.
+        body = QHBoxLayout()
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(['Student', 'Started', 'Ended', 'Reason'])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
-        layout.addWidget(self.table)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.cellClicked.connect(self._show_screenshot)
+        body.addWidget(self.table, stretch=3)
+        self.preview = QLabel('Click an alert to see its screenshot.')
+        self.preview.setAlignment(Qt.AlignCenter)
+        self.preview.setMinimumSize(320, 240)
+        self.preview.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self.preview.setStyleSheet('background: #0f172a; color: #cbd5e1;')
+        body.addWidget(self.preview, stretch=2)
+        layout.addLayout(body)
 
         self.status = QLabel('')
         self.status.setStyleSheet('color: gray;')
         layout.addWidget(self.status)
 
-        self.refresh()
+        # Pull new alerts every 3 seconds while this screen is open, so a flag
+        # on the student side shows up here without pressing Refresh.
+        self._paths = []   # screenshot path of each table row
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.refresh)
 
     def refresh(self):
         name = self.filter_input.text().strip()
@@ -794,14 +814,12 @@ class ProctorView(QWidget):
             return
         try:
             cur = conn.cursor()
+            sql = ('SELECT session_user_id, started_at, ended_at, reason, screenshot_path '
+                   'FROM cheating_events ')
             if name:
-                cur.execute(
-                    'SELECT session_user_id, detected_at FROM cheating_events '
-                    'WHERE session_user_id = %s ORDER BY detected_at DESC', (name,))
+                cur.execute(sql + 'WHERE session_user_id = %s ORDER BY started_at DESC', (name,))
             else:
-                cur.execute(
-                    'SELECT session_user_id, detected_at FROM cheating_events '
-                    'ORDER BY detected_at DESC')
+                cur.execute(sql + 'ORDER BY started_at DESC')
             rows = cur.fetchall()
             cur.close()
             conn.close()
@@ -810,7 +828,30 @@ class ProctorView(QWidget):
             return
 
         self.table.setRowCount(len(rows))
-        for r, (user, ts) in enumerate(rows):
+        self._paths = []
+        for r, (user, started, ended, reason, path) in enumerate(rows):
+            ended_text = ended.strftime('%H:%M:%S') if ended else 'ongoing'
             self.table.setItem(r, 0, QTableWidgetItem(str(user)))
-            self.table.setItem(r, 1, QTableWidgetItem(str(ts)))
-        self.status.setText(f'{len(rows)} alert(s).')
+            self.table.setItem(r, 1, QTableWidgetItem(started.strftime('%Y-%m-%d %H:%M:%S')))
+            self.table.setItem(r, 2, QTableWidgetItem(ended_text))
+            self.table.setItem(r, 3, QTableWidgetItem(reason or ''))
+            self._paths.append(path)
+        self.status.setText(f'{len(rows)} alert(s). Updates every 3 seconds.')
+
+    def _show_screenshot(self, row, col):
+        path = self._paths[row]
+        full = Path(__file__).resolve().parent / path if path else None
+        if full is None or not full.exists():
+            self.preview.setText('No screenshot for this alert.')
+            return
+        self.preview.setPixmap(QPixmap(str(full)).scaled(
+            self.preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.refresh()
+        self.timer.start(3000)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self.timer.stop()

@@ -102,14 +102,21 @@ CREATE TABLE gaze_logs (
 --
 -- Written by CheatEventLogger, one row per episode (not per frame) once the
 -- model + rule + 2-second hold all agree. ProctorView reads this table.
+--
+-- The row is inserted when the episode starts; ended_at stays NULL ("ongoing")
+-- until the student's behaviour goes back to normal. screenshot_path is
+-- relative to integration/app, e.g. 'evidence/allain_20260910_103205.jpg'.
 
 DROP TABLE IF EXISTS cheating_events;
 
 CREATE TABLE cheating_events (
     id                BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     session_user_id   VARCHAR(64)   NOT NULL,
-    detected_at       DATETIME(3)   NOT NULL,
+    started_at        DATETIME(3)   NOT NULL,
+    ended_at          DATETIME(3)   NULL,
+    reason            VARCHAR(64)   NULL,   -- 'looking down', 'gaze left', 'gaze right'
+    screenshot_path   VARCHAR(255)  NULL,
 
     created_at        TIMESTAMP     DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_user_time (session_user_id, detected_at)
+    INDEX idx_user_time (session_user_id, started_at)
 ) ENGINE=InnoDB;
