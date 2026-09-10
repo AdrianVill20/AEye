@@ -29,5 +29,9 @@ app_video/gaze/zone_model.pkl
 # AEye - evidence screenshots (students' faces - never commit)
 integration/app/evidence/
 
+# AEye - per-student calibration + trained models 
+integration/app/calibration_data/*.json
+integration/app/models/*.joblib
+
 # AEye - large dlib face-landmark model (download locally; too big for git)
 shape_predictor_68_face_landmarks.dat
