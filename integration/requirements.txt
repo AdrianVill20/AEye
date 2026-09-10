@@ -10,6 +10,7 @@ mysql-connector-python>=9.0
 scikit-learn>=1.5
 joblib>=1.4
 ultralytics>=8.3
+pygrabber>=0.2  # lists cameras by name in the pickers / side-camera chooser
 
 # Notes:
 # - scikit-learn + joblib are needed by train_cheat_model.py (training) and

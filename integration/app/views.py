@@ -9,19 +9,13 @@ import calibration_store
 from cheat_logger import CheatEventLogger
 from gaze_graph import GazeGraph
 from db_config import get_connection
-from phone_camera import PhoneCameraDialog
+from phone_camera import SideCameraDialog, populate_camera_combo
 
 
-def _open_phone_setup(parent, combo):
-    """Open the Iriun phone-camera dialog; on confirm, point `combo` at the
-    chosen camera index. Leaves `combo` untouched if the user cancels."""
-    dlg = PhoneCameraDialog(parent)
-    dlg.exec()
-    if dlg.selected_index is not None:
-        text = str(dlg.selected_index)
-        if combo.findText(text) < 0:
-            combo.addItem(text)
-        combo.setCurrentText(text)
+def _combo_index(combo):
+    """Camera index behind the selected item in a name-populated combo."""
+    data = combo.currentData()
+    return data if isinstance(data, int) else 0
 
 
 class LoginView(QWidget):
@@ -264,13 +258,9 @@ class CalibrationView(QWidget):
         controls.addWidget(self.duration_box)
         controls.addWidget(QLabel('Camera:'))
         self.cam_box = QComboBox()
-        self.cam_box.addItems(['0', '1', '2', '3'])
-        self.cam_box.setCurrentText('0')
+        populate_camera_combo(self.cam_box, default_index=0)   # by name, not 0/1/2
+        self.cam_box.setMinimumWidth(170)
         controls.addWidget(self.cam_box)
-        phone_btn = QPushButton('📱 Set up phone camera')
-        phone_btn.setToolTip('Use your phone as the camera via Iriun Webcam')
-        phone_btn.clicked.connect(lambda: _open_phone_setup(self, self.cam_box))
-        controls.addWidget(phone_btn)
         controls.addStretch(1)
         self.start_btn = QPushButton('Start Calibration')
         self.start_btn.clicked.connect(self._start)
@@ -302,7 +292,7 @@ class CalibrationView(QWidget):
         self._samples = []
         # detect=False -> record only. We collect the raw features via
         # features_ready and save them to JSON; nothing is written to MySQL.
-        cam = int(self.cam_box.currentText())
+        cam = _combo_index(self.cam_box)
         self.worker = FrontCamWorker(camera_index=cam, session_user_id=self._user_id, detect=False)
         self.worker.frame_ready.connect(self._show_frame)
         self.worker.features_ready.connect(self._collect)
@@ -445,30 +435,30 @@ class DetectionView(QWidget):
         self.front_log = None
         self.logger = None
         self._count = 0
+        self._side_idx = 1        # side camera, set via the "Choose side camera" popup
+        self._side_label = ''
 
         layout = QVBoxLayout(self)
         heading = QLabel('Live Tracking')
         heading.setStyleSheet('font-weight: bold; font-size: 18px;')
         layout.addWidget(heading)
 
-        # Camera-index pickers (which webcam each feed opens).
+        # Cameras are picked by NAME. The front (face) cam is a named dropdown;
+        # the side cam is chosen in a popup with a live preview.
         cams_row = QHBoxLayout()
         cams_row.addStretch(1)
         cams_row.addWidget(QLabel('Front cam:'))
         self.front_box = QComboBox()
-        self.front_box.addItems(['0', '1', '2', '3'])
-        self.front_box.setCurrentText('0')
+        populate_camera_combo(self.front_box, default_index=0)
+        self.front_box.setMinimumWidth(150)
         cams_row.addWidget(self.front_box)
         cams_row.addSpacing(16)
-        cams_row.addWidget(QLabel('Side cam:'))
-        self.side_box = QComboBox()
-        self.side_box.addItems(['0', '1', '2', '3'])
-        self.side_box.setCurrentText('1')
-        cams_row.addWidget(self.side_box)
-        phone_btn = QPushButton('📱 Set up phone camera')
-        phone_btn.setToolTip('Use your phone as the side camera via Iriun Webcam')
-        phone_btn.clicked.connect(lambda: _open_phone_setup(self, self.side_box))
-        cams_row.addWidget(phone_btn)
+        self.side_summary = QLabel()
+        self.side_summary.setStyleSheet('color: #334155;')
+        cams_row.addWidget(self.side_summary)
+        self.choose_side_btn = QPushButton('Choose side camera')
+        self.choose_side_btn.clicked.connect(self._choose_side)
+        cams_row.addWidget(self.choose_side_btn)
         cams_row.addStretch(1)
 
         # Checkbox to hide the graph (some proctors only want the feeds).
@@ -478,6 +468,7 @@ class DetectionView(QWidget):
         cams_row.addWidget(self.graph_check)
         cams_row.addStretch(1)
         layout.addLayout(cams_row)
+        self._update_side_summary()
 
         # Splitters, so the proctor can drag the dividers: one between the two
         # camera feeds, one between the feeds and the graph under them.
@@ -541,6 +532,21 @@ class DetectionView(QWidget):
     def _show_graph(self, on):
         self.graph_box.setVisible(on)
 
+    def _update_side_summary(self):
+        name = self._side_label or f'Camera {self._side_idx}'
+        self.side_summary.setText(f'Side camera:  {name}')
+
+    def _choose_side(self):
+        # Open the name + preview popup; the front (face) cam can't be reused.
+        if self.front is not None:
+            return
+        dlg = SideCameraDialog(self, front_index=_combo_index(self.front_box))
+        dlg.exec()
+        if dlg.selected_index is not None:
+            self._side_idx = dlg.selected_index
+            self._side_label = dlg.selected_label
+            self._update_side_summary()
+
     def _toggle(self):
         if self.front is None:
             self._start()
@@ -551,8 +557,8 @@ class DetectionView(QWidget):
         session = self.window().session
         user_id = session.user_id if session else 'test_user'
 
-        front_idx = int(self.front_box.currentText())
-        side_idx = int(self.side_box.currentText())
+        front_idx = _combo_index(self.front_box)
+        side_idx = self._side_idx
 
         # Front cam: cheat detection (model + rule + 2s).
         self.front = FrontCamWorker(camera_index=front_idx, session_user_id=user_id, detect=True)
@@ -581,7 +587,7 @@ class DetectionView(QWidget):
 
         self._count = 0
         self.front_box.setEnabled(False)   # can't change cameras mid-session
-        self.side_box.setEnabled(False)
+        self.choose_side_btn.setEnabled(False)
         self.status.setStyleSheet('color: #006600;')
         self.status.setText('Tracking... (0 flags)')
         self.button.setText('Stop Tracking')
@@ -622,7 +628,7 @@ class DetectionView(QWidget):
             self.logger.wait()
             self.logger = None
         self.front_box.setEnabled(True)
-        self.side_box.setEnabled(True)
+        self.choose_side_btn.setEnabled(True)
         self.button.setText('Start Tracking')
         self.status.setStyleSheet('color: gray;')
         self.status.setText('Stopped.')

@@ -1,48 +1,30 @@
-"""Phone-as-camera setup dialog (Iriun Webcam).
+"""Side-camera chooser + phone (Iriun Webcam) helper.
 
-Self-contained helper. Iriun makes a phone appear as an ordinary camera index
-on the PC, so the rest of AEye opens it exactly like any webcam -- this dialog
-shows the setup steps, lists the cameras by name, and gives a live preview so
-the user can confirm the phone feed. After exec(), `selected_index` holds the
-chosen camera index, or stays None if the user cancelled.
+Cameras are shown by NAME with a live preview, so the student never deals with
+"index 0/1/2" -- they see their phone's feed and click it. Iriun makes a phone
+appear as an ordinary camera on the PC, so AEye still opens whatever the chooser
+returns by its index.
 
-The preview opens the camera on its own background thread and releases it as
-soon as the dialog closes, so the AEye worker can open the same index next.
+`SideCameraDialog`: after exec(), `selected_index` (int) and `selected_label`
+(str) hold the pick, or `selected_index` is None if cancelled.
+`populate_camera_combo`: fills a dropdown with camera names (for the face cam).
 """
 
 import cv2
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-                               QComboBox, QPushButton, QFrame)
+                               QComboBox, QPushButton, QFrame, QListWidget,
+                               QListWidgetItem)
 
-# The picker always exposes at least these indexes so the usual 0/1 exist even
-# when camera names cannot be read.
+# Always expose at least these indexes so 0/1 exist even when names can't be read.
 MIN_LOCAL_INDEXES = 4
 
-INSTRUCTIONS = (
-    "<b style='color:#b45309;'>Before you start:</b> open the Iriun PC client "
-    "and connect your phone <b>before</b> the exam locks down, and keep it "
-    "running in the background."
-    "<br><br>"
-    "<b>1. Install once</b>"
-    "<br>&bull; <b>PC:</b> Iriun Webcam from iriun.com"
-    "<br>&bull; <b>Phone:</b> Iriun Webcam from the App Store (iPhone) or "
-    "Google Play (Android)"
-    "<br><br>"
-    "<b>2. Connect</b>"
-    "<br>&bull; <b>USB cable (best for exams):</b> plug in with a <b>data</b> "
-    "cable. iPhone: tap <b>Trust</b>. Android: enable USB debugging once "
-    "(Settings &rarr; About phone &rarr; tap \"Build number\" 7&times; &rarr; "
-    "Developer options &rarr; USB debugging)."
-    "<br>&bull; <b>Wi-Fi:</b> same Wi-Fi as this laptop, then open the app."
-    "<br><br>"
-    "<b>3. Pick it</b>"
-    "<br>Open the Iriun app, press <b>Refresh</b>, choose <b>\"Iriun Webcam\"</b> "
-    "and confirm it in the preview."
-    "<br><br>"
-    "<span style='color:gray;'>Use a data cable, not charge-only; USB also "
-    "charges the phone. The free version adds a small watermark.</span>"
+STEPS = (
+    "<b>Using your phone?</b> Install <b>Iriun Webcam</b> on the PC (iriun.com) "
+    "and on the phone (App Store / Google Play). Connect by <b>USB</b> (data "
+    "cable; iPhone tap Trust, Android enable USB debugging) or Wi-Fi, open the "
+    "app, and it appears below as <b>\"Iriun Webcam\"</b>."
 )
 
 
@@ -55,9 +37,22 @@ def list_camera_names():
         return []
 
 
+def populate_camera_combo(combo, default_index=0):
+    """Fill a QComboBox with cameras as their name (itemData = index); falls
+    back to 'Camera i' when names can't be read. Selects default_index."""
+    combo.clear()
+    names = list_camera_names()
+    for i in range(max(len(names), MIN_LOCAL_INDEXES)):
+        label = names[i] if i < len(names) else f'Camera {i}'
+        combo.addItem(label, i)
+    if 0 <= default_index < combo.count():
+        combo.setCurrentIndex(default_index)
+    return names
+
+
 class _PreviewWorker(QThread):
-    """Reads frames from one camera index for the dialog preview and releases
-    the camera when stopped. Kept separate from the app's real workers."""
+    """Reads frames from one camera index for the preview and releases the
+    camera when stopped. Separate from the app's real workers."""
 
     frame = Signal(QImage)
     failed = Signal()
@@ -83,72 +78,67 @@ class _PreviewWorker(QThread):
                 continue
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             h, w = rgb.shape[:2]
-            # .copy() detaches the QImage from the numpy buffer before it crosses
-            # the thread boundary.
+            # .copy() detaches the QImage from the numpy buffer before it
+            # crosses the thread boundary.
             self.frame.emit(QImage(rgb.data, w, h, 3 * w,
                                    QImage.Format_RGB888).copy())
             self.msleep(30)
         cap.release()
 
 
-class PhoneCameraDialog(QDialog):
-    """Iriun setup steps + camera picker + live preview. Sets `selected_index`
-    on accept."""
+class SideCameraDialog(QDialog):
+    """Pick the side camera by name + live preview. `front_index` is the face
+    camera, which can't be reused. Sets selected_index / selected_label."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, front_index=None):
         super().__init__(parent)
-        self.setWindowTitle('Set up phone camera (Iriun Webcam)')
-        self.setMinimumWidth(720)
+        self.setWindowTitle('Choose side camera')
+        self.setMinimumWidth(700)
         self.selected_index = None
+        self.selected_label = ''
+        self._front_index = front_index
         self._preview = None
-        self._loading = False
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(18, 18, 18, 18)
-        outer.setSpacing(14)
+        outer.setSpacing(12)
 
-        heading = QLabel('Use your phone as a camera')
-        heading.setStyleSheet('font-size: 17px; font-weight: bold;')
+        heading = QLabel('Which camera watches you from the side?')
+        heading.setStyleSheet('font-size: 16px; font-weight: bold;')
         outer.addWidget(heading)
 
         body = QHBoxLayout()
-        body.setSpacing(18)
-
-        steps = QLabel(INSTRUCTIONS)
-        steps.setTextFormat(Qt.RichText)
-        steps.setWordWrap(True)
-        steps.setAlignment(Qt.AlignTop)
-        steps.setFixedWidth(320)
-        body.addWidget(steps)
-
-        right = QVBoxLayout()
-        right.setSpacing(10)
-        self.preview = QLabel('Camera preview')
+        body.setSpacing(16)
+        self.preview = QLabel('Select a camera')
         self.preview.setAlignment(Qt.AlignCenter)
         self.preview.setFixedSize(360, 270)
         self.preview.setFrameShape(QFrame.StyledPanel)
         self.preview.setStyleSheet(
             'background: #0f172a; color: #94a3b8; border-radius: 10px;')
-        right.addWidget(self.preview)
+        body.addWidget(self.preview)
 
-        cam_row = QHBoxLayout()
-        cam_row.addWidget(QLabel('Camera:'))
-        self.cam_box = QComboBox()
-        self.cam_box.currentIndexChanged.connect(self._on_cam_changed)
-        cam_row.addWidget(self.cam_box, stretch=1)
-        self.refresh_btn = QPushButton('Refresh')
+        right = QVBoxLayout()
+        right.setSpacing(8)
+        right.addWidget(QLabel('Click a camera to preview it:'))
+        self.cam_list = QListWidget()
+        self.cam_list.currentRowChanged.connect(self._on_row)
+        right.addWidget(self.cam_list, stretch=1)
+        self.refresh_btn = QPushButton('Refresh list')
         self.refresh_btn.setToolTip('Re-scan after opening the Iriun app')
-        self.refresh_btn.clicked.connect(self._fill_cameras)
-        cam_row.addWidget(self.refresh_btn)
-        right.addLayout(cam_row)
+        self.refresh_btn.clicked.connect(self._fill)
+        right.addWidget(self.refresh_btn)
+        steps = QLabel(STEPS)
+        steps.setTextFormat(Qt.RichText)
+        steps.setWordWrap(True)
+        steps.setStyleSheet('color: gray; font-size: 11px;')
+        right.addWidget(steps)
+        body.addLayout(right, stretch=1)
+        outer.addLayout(body)
 
         self.status = QLabel('')
         self.status.setWordWrap(True)
         self.status.setStyleSheet('color: gray;')
-        right.addWidget(self.status)
-        right.addStretch(1)
-        body.addLayout(right, stretch=1)
-        outer.addLayout(body)
+        outer.addWidget(self.status)
 
         btns = QHBoxLayout()
         btns.addStretch(1)
@@ -161,37 +151,44 @@ class PhoneCameraDialog(QDialog):
         btns.addWidget(self.use_btn)
         outer.addLayout(btns)
 
-        # Stops the preview (and releases the camera) however the dialog ends.
         self.finished.connect(self._stop_preview)
-        self._fill_cameras()
+        self._fill()
 
-    def _fill_cameras(self):
+    def _fill(self):
         self._stop_preview()
-        self._loading = True
-        self.cam_box.clear()
+        self.cam_list.clear()
         names = list_camera_names()
-        for i in range(max(len(names), MIN_LOCAL_INDEXES)):
-            label = f'{i} - {names[i]}' if i < len(names) else str(i)
-            self.cam_box.addItem(label, i)
         sel = 0
-        for i, n in enumerate(names):        # jump straight to Iriun if present
-            if 'iriun' in n.lower():
-                sel = i
-                break
-        self.cam_box.setCurrentIndex(sel)
-        self._loading = False
-        self._start_preview(sel)
+        for i in range(max(len(names), MIN_LOCAL_INDEXES)):
+            label = names[i] if i < len(names) else f'Camera {i}'
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, i)
+            self.cam_list.addItem(item)
+            if i < len(names) and 'iriun' in names[i].lower():
+                sel = i          # jump to the phone if it's there
+        self.cam_list.setCurrentRow(sel)
 
-    def _on_cam_changed(self, _index):
-        if not self._loading:
-            self._start_preview(self.cam_box.currentData())
+    def _current_index(self):
+        item = self.cam_list.currentItem()
+        return item.data(Qt.UserRole) if item else None
+
+    def _on_row(self, _row):
+        index = self._current_index()
+        self._start_preview(index)
+        clash = index == self._front_index
+        self.use_btn.setEnabled(not clash)
+        if clash:
+            self.status.setStyleSheet('color: #a00000;')
+            self.status.setText("That's your face camera — pick a different one.")
+        else:
+            self.status.setStyleSheet('color: gray;')
+            self.status.setText('')
 
     def _start_preview(self, index):
         self._stop_preview()
         if index is None:
             return
         self.preview.setText('Opening camera ...')
-        self.status.setText('')
         self._preview = _PreviewWorker(int(index))
         self._preview.frame.connect(self._show_frame)
         self._preview.failed.connect(self._preview_failed)
@@ -211,9 +208,13 @@ class PhoneCameraDialog(QDialog):
         self.preview.setText('No preview')
         self.status.setStyleSheet('color: #a00000;')
         self.status.setText('Could not open this camera. If it is your phone, '
-                             'open the Iriun app first, then press Refresh.')
+                            'open the Iriun app, then press Refresh list.')
 
     def _accept(self):
-        data = self.cam_box.currentData()
-        self.selected_index = data if isinstance(data, int) else 0
+        index = self._current_index()
+        if index is None:
+            return
+        self.selected_index = int(index)
+        item = self.cam_list.currentItem()
+        self.selected_label = item.text() if item else f'Camera {index}'
         self.accept()
