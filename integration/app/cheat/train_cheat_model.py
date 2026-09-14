@@ -1,9 +1,10 @@
 """Train a student's Isolation Forest model from their calibration JSON.
 
 Usually you don't need this - the calibration screen's "Train Model" button
-does it in-app. To run it manually, from integration/app:
+does it in-app. To run it manually, from integration/app (note the -m: it now
+lives in the cheat package, so run it as a module, not as a bare file path):
 
-    ../.venv/Scripts/python.exe train_cheat_model.py --user ichoy
+    ../.venv/Scripts/python.exe -m cheat.train_cheat_model --user ichoy
 """
 
 import argparse
@@ -13,8 +14,8 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import IsolationForest
 import joblib
 
-from calibration_store import load as load_calib, FEATURES
-from cheat_detector import user_model_path
+from cheat.calibration_store import load as load_calib, FEATURES
+from cheat.cheat_detector import user_model_path
 
 
 def train(user, contamination=0.03):

@@ -12,7 +12,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-CALIB_DIR = Path(__file__).resolve().parent / 'calibration_data'
+from paths import CALIB_DIR
 
 # Feature order - must match cheat_detector.FEATURES and the training script.
 FEATURES = ['h_ratio', 'v_openness', 'yaw', 'pitch', 'roll']

@@ -11,8 +11,9 @@ from mediapipe.tasks.python import vision
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
 
-MODEL = Path(__file__).resolve().parent.parent / 'head_pose' / 'face_landmarker.task'
-EVIDENCE_DIR = Path(__file__).resolve().parent / 'evidence'
+from paths import HEAD_POSE_DIR, EVIDENCE_DIR
+
+MODEL = HEAD_POSE_DIR / 'face_landmarker.task'
 
 RIGHT_IRIS_CENTER = 468
 LEFT_IRIS_CENTER = 473
@@ -147,7 +148,7 @@ class FrontCamWorker(QThread):
         self._anom_since = None
         self._alert_active = False
         if self.detect:
-            from cheat_detector import CheatDetector
+            from cheat.cheat_detector import CheatDetector
             self._detector = CheatDetector.load(self.session_user_id)
 
         options = vision.FaceLandmarkerOptions(

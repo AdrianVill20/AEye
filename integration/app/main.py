@@ -3,11 +3,11 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication, QMainWindow, QStackedWidget
 
-from keyboard_lock import KeyboardLock
-from views import LoginView, AnalysisDashboard, ProctorView
-from auth import authenticate
-from session import Session
-from db_config import ensure_database
+from core.keyboard_lock import KeyboardLock
+from ui.views import LoginView, AnalysisDashboard, ProctorView
+from core.auth import authenticate
+from core.session import Session
+from core.db_config import ensure_database
 
 
 class MainWindow(QMainWindow):

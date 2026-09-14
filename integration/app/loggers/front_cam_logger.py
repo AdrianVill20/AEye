@@ -1,7 +1,7 @@
 import queue
 import time
 from PySide6.QtCore import QThread
-from db_config import get_connection
+from core.db_config import get_connection
 
 INSERT_SQL = (
     "INSERT INTO gaze_logs "

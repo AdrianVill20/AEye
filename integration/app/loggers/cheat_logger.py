@@ -11,7 +11,7 @@ keeps its own open row, so a phone ending never closes a gaze episode.
 import queue
 from datetime import datetime
 from PySide6.QtCore import QThread
-from db_config import get_connection
+from core.db_config import get_connection
 
 INSERT_SQL = (
     "INSERT INTO cheating_events (session_user_id, started_at, reason, screenshot_path) "

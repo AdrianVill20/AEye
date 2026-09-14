@@ -2,14 +2,15 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, QThread, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QFrame, QComboBox, QMdiArea, QMdiSubWindow, QSizePolicy, QSplitter, QStackedWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QInputDialog, QProgressBar, QCheckBox
-from posture_worker import SideCameraWorker
-from front_cam_worker import FrontCamWorker
-from front_cam_logger import FrontCamLogWriter
-import calibration_store
-from cheat_logger import CheatEventLogger
-from gaze_graph import GazeGraph
-from db_config import get_connection
-from phone_camera import SideCameraDialog, populate_camera_combo, CameraPreview
+from paths import APP_DIR
+from workers.posture_worker import SideCameraWorker
+from workers.front_cam_worker import FrontCamWorker
+from loggers.front_cam_logger import FrontCamLogWriter
+from cheat import calibration_store
+from loggers.cheat_logger import CheatEventLogger
+from ui.gaze_graph import GazeGraph
+from core.db_config import get_connection
+from ui.phone_camera import SideCameraDialog, populate_camera_combo, CameraPreview
 
 
 def _combo_index(combo):
@@ -87,7 +88,7 @@ class TrainWorker(QThread):
 
     def run(self):
         try:
-            from train_cheat_model import train   # heavy imports happen here
+            from cheat.train_cheat_model import train   # heavy imports happen here
             self.done.emit(train(self.user))
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -712,6 +713,7 @@ class AnalysisDashboard(QWidget):
         # Every view, in the order its "open" button appears in the toolbar.
         view_list = [
             ('Front + Side Cam', self.front_side_tab),
+            ('Proctor', ProctorView()),
         ]
 
         # One sub-window per view, plus one button that (re)opens that view.
@@ -776,7 +778,7 @@ class AnalysisDashboard(QWidget):
 
     def _open_web(self):
         if self.web_tab is None:
-            from web_tab import WebTab
+            from ui.web_tab import WebTab
             self.web_tab = WebTab()
         self.web_tab.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         self.web_tab.showFullScreen()
@@ -884,7 +886,7 @@ class ProctorView(QWidget):
 
     def _show_screenshot(self, row, col):
         path = self._paths[row]
-        full = Path(__file__).resolve().parent / path if path else None
+        full = APP_DIR / path if path else None
         if full is None or not full.exists():
             self.preview.setText('No screenshot for this alert.')
             return

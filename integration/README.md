@@ -23,8 +23,8 @@ First time on a new machine, build that environment:
 ```
 
 MySQL must be running on `127.0.0.1:3306` with user `root` / password `root`
-(see `app/db_config.py`). The app creates the `aeye_db` database and its tables
-on startup if they are missing.
+(see `app/core/db_config.py`). The app creates the `aeye_db` database and its
+tables on startup if they are missing.
 
 ## Using the app
 
@@ -35,9 +35,10 @@ on startup if they are missing.
      records what normal looks like for you. Saves to
      `app/calibration_data/calibration_<id>.json`.
    - **Train.** The calibration screen prints the exact command when it finishes.
-     Run it from `integration/app`:
+     Run it from `integration/app` (it lives in the `cheat` package now, so run
+     it as a module with `-m`):
      ```powershell
-     ..\.venv\Scripts\python.exe train_cheat_model.py --user <id>
+     ..\.venv\Scripts\python.exe -m cheat.train_cheat_model --user <id>
      ```
      That writes `app/models/cheat_model_<id>.joblib`.
    - **Step 2 — Live Tracking.** Press *Proceed to Monitoring*, then
@@ -51,7 +52,7 @@ Sign in as **Proctor** instead to see the alerts table.
 ### ⚠️ Camera notes
 - With **one webcam**, both the front and side workers open camera **0** and will
   fight over it. Set the side camera back to `camera_index=1` in
-  `app/views.py` (`DetectionView._start`) once the real side camera is plugged in.
+  `app/ui/views.py` (`DetectionView._start`) once the real side camera is plugged in.
 - If a camera shows an **OBS logo**, that's the OBS Virtual Camera on another
   index — not a real webcam.
 
@@ -59,27 +60,39 @@ Sign in as **Proctor** instead to see the alerts table.
 
 ```
 integration/
-   run.bat                 <- double-click to launch
-   setup_env.ps1           <- builds integration/.venv
+   run.bat                     <- double-click to launch
+   setup_env.ps1               <- builds integration/.venv
    requirements.txt
-   README.md               <- this file
+   README.md                   <- this file
    app/
-      main.py              <- entry point: login -> student / proctor
-      views.py             <- all screens (login, calibration, tracking, proctor)
-      front_cam_worker.py  <- front camera thread: eye gaze + head pose + detection
-      posture_worker.py    <- side camera thread: upper-body posture
-      cheat_detector.py    <- loads the student's Isolation Forest model
-      train_cheat_model.py <- trains it from the calibration JSON (run by hand)
-      calibration_store.py <- reads / writes the calibration JSON
-      front_cam_logger.py  <- gaze_logs writer (batched)
-      posture_logger.py    <- posture_logs writer (batched)
-      cheat_logger.py      <- cheating_events writer (one row per episode)
-      db_config.py         <- MySQL connection + table bootstrap
-      web_tab.py           <- the locked e-class browser window
-      auth.py  session.py  keyboard_lock.py
-      calibration_data/    <- per-student calibration JSON
-      models/              <- per-student trained models
-      database/schema.sql  <- reference copy of the schema
+      main.py                  <- entry point: login -> student / proctor
+      run.bat                  <- launch from inside app/
+      paths.py                 <- one place that says where the data folders live
+      core/                    <- app plumbing
+         auth.py               <- placeholder login check
+         session.py            <- who is logged in
+         db_config.py          <- MySQL connection + table bootstrap
+         keyboard_lock.py      <- fullscreen keyboard lockdown
+      ui/                      <- everything on screen (Qt)
+         views.py              <- all screens (login, calibration, tracking, proctor)
+         web_tab.py            <- the locked e-class browser window
+         gaze_graph.py         <- live gaze graph widget
+         phone_camera.py       <- side-camera / phone-camera picker dialogs
+      workers/                 <- background camera threads
+         front_cam_worker.py   <- front camera: eye gaze + head pose + detection
+         posture_worker.py     <- side camera: upper-body posture
+      loggers/                 <- database log writers (batched)
+         front_cam_logger.py   <- gaze_logs writer
+         posture_logger.py     <- posture_logs writer
+         cheat_logger.py       <- cheating_events writer (one row per episode)
+      cheat/                   <- cheat detection + model training
+         cheat_detector.py     <- loads the student's Isolation Forest model
+         train_cheat_model.py  <- trains it from the calibration JSON (run by hand)
+         calibration_store.py  <- reads / writes the calibration JSON
+      calibration_data/        <- per-student calibration JSON  (data)
+      models/                  <- per-student trained models    (data)
+      evidence/                <- cheating screenshots           (data, git-ignored)
+      database/schema.sql      <- reference copy of the schema
    head_pose/
       face_landmarker.task       <- MediaPipe face model (478 landmarks)
       pose_landmarker_heavy.task <- MediaPipe pose model (33 landmarks)

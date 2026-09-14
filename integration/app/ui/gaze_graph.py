@@ -12,8 +12,8 @@ from PySide6.QtCore import Qt, QPointF, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel
 
-import cheat_detector
-import calibration_store
+from cheat import cheat_detector
+from cheat import calibration_store
 
 PLOTTED = ('h_ratio', 'yaw', 'pitch')
 KEYS = [f for f in cheat_detector.FEATURES if f in PLOTTED]

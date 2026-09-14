@@ -12,7 +12,7 @@ camera keeps working with detection simply turned off.
 import re
 from pathlib import Path
 
-MODELS_DIR = Path(__file__).resolve().parent / 'models'
+from paths import MODELS_DIR
 
 # Feature order - MUST match training and calibration_store.FEATURES.
 FEATURES = ['h_ratio', 'v_openness', 'yaw', 'pitch', 'roll']

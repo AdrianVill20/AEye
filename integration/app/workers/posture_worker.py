@@ -8,11 +8,12 @@ from mediapipe.tasks.python import vision
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
 from ultralytics import YOLO
-from posture_logger import PostureLogWriter
-from front_cam_worker import save_screenshot
+from loggers.posture_logger import PostureLogWriter
+from workers.front_cam_worker import save_screenshot
+from paths import HEAD_POSE_DIR, MODELS_DIR
 
-MODEL = Path(__file__).resolve().parent.parent / 'head_pose' / 'pose_landmarker_heavy.task'
-PHONE_MODEL = Path(__file__).resolve().parent / 'models' / 'yolov8s.pt'
+MODEL = HEAD_POSE_DIR / 'pose_landmarker_heavy.task'
+PHONE_MODEL = MODELS_DIR / 'yolov8s.pt'
 
 POSE_CONNECTIONS = [
     (11, 12), (11, 13), (13, 15), (12, 14), (14, 16),
