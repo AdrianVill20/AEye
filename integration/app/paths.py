@@ -11,7 +11,7 @@ APP_DIR = Path(__file__).resolve().parent          # integration/app
 INTEGRATION_DIR = APP_DIR.parent                   # integration
 
 # Asset / data folders that live at the app root.
-MODELS_DIR = APP_DIR / "models"                    # per-student *.joblib + yolov8s.pt
+MODELS_DIR = APP_DIR / "models"                    # per-student screen_area_*.json + yolov8s.pt
 EVIDENCE_DIR = APP_DIR / "evidence"                # cheating screenshots
 CALIB_DIR = APP_DIR / "calibration_data"           # per-student calibration_*.json
 

@@ -1,7 +1,8 @@
+import time
 from pathlib import Path
-from PySide6.QtCore import Qt, QTimer, QThread, Signal
-from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QFrame, QComboBox, QMdiArea, QMdiSubWindow, QSizePolicy, QSplitter, QStackedWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QInputDialog, QProgressBar, QCheckBox
+from PySide6.QtCore import Qt, QTimer, QThread, Signal, QPointF, QRect
+from PySide6.QtGui import QPixmap, QPainter, QColor, QFont, QPen
+from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QFrame, QComboBox, QMdiArea, QMdiSubWindow, QSizePolicy, QSplitter, QStackedWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QInputDialog, QCheckBox
 from paths import APP_DIR
 from workers.posture_worker import SideCameraWorker
 from workers.front_cam_worker import FrontCamWorker
@@ -9,8 +10,9 @@ from loggers.front_cam_logger import FrontCamLogWriter
 from cheat import calibration_store
 from loggers.cheat_logger import CheatEventLogger
 from ui.gaze_graph import GazeGraph
+from ui.hull_view import HullView
 from core.db_config import get_connection
-from ui.phone_camera import SideCameraDialog, populate_camera_combo, CameraPreview
+from ui.phone_camera import SideCameraDialog, populate_camera_combo, pick_cameras, CameraPreview
 
 
 def _combo_index(combo):
@@ -94,85 +96,104 @@ class TrainWorker(QThread):
             self.failed.emit(str(exc))
 
 
-class ReadingWindow(QWidget):
-    """Full-screen reading page shown during calibration: the passage plus a
-    live countdown and progress bar. The student reads it while the camera
-    records in the background. Closes when the timer ends (or Cancel)."""
+# Dot positions, 0-1 of the screen (like EyeTrax's 9 / 5 point grids).
+# Close to the edges on purpose, so looking at the screen edge counts as normal.
+POINTS_9 = [(.5, .5), (.05, .05), (.95, .05), (.05, .95), (.95, .95), (.5, .05), (.05, .5), (.95, .5), (.5, .95)]
+POINTS_5 = [(.5, .5), (.05, .05), (.95, .05), (.05, .95), (.95, .95)]
+# Head movement: eyes stay on the centre dot while the head turns - first left
+# and right, then up and down. Teaches how much the head moves the eye values.
+HEAD_STEPS = {'lr': 'Turn your head slowly LEFT and RIGHT',
+              'ud': 'Turn your head slowly UP and DOWN'}
+# Extra dots at the end, NOT used for training - they measure accuracy.
+VAL_POINTS = [(.3, .3), (.7, .3), (.3, .7), (.7, .7)]
+READY_SEC = 2       # "follow the dot" pause before the first dot
+DOT_SEC = 2         # per dot: 1 s to look at it, then 1 s recording
+HEAD_SEC = 5        # per head dot: 1 s to look at it, then 4 s turning the head
 
-    def __init__(self, passage_text, seconds, on_cancel=None):
+
+class DotWindow(QWidget):
+    """Full-screen dot calibration. The student looks at each dot (or follows
+    the moving dot) while the camera records. The clock only runs while a face
+    is seen, so looking away doesn't waste dots. state = (x, y, recording, val,
+    head) of the dot right now, or None once finished."""
+
+    def __init__(self, mode, on_done, on_cancel):
         super().__init__()
         self.setWindowTitle('AEye Calibration')
         self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
-        self.setStyleSheet('background: #ffffff;')
+        self.mode = mode
+        self._on_done = on_done
         self._on_cancel = on_cancel
+        self.last_face = 0.0      # set by CalibrationView when a frame has a face
+        self.t = 0.0              # calibration clock (seconds)
+        self._last_tick = time.time()
+        self.state = (.5, .5, False, False, '')
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(16)     # ~60 fps
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(80, 50, 80, 40)
-        layout.setSpacing(18)
+    def dot_at(self, t):
+        if t < READY_SEC:
+            return (.5, .5, False, False, '')
+        t -= READY_SEC
+        points = POINTS_5 if self.mode == '5 point' else POINTS_9
+        # every step: (x, y, seconds, val, head)
+        steps = [(x, y, DOT_SEC, False, '') for x, y in points]
+        steps += [(.5, .5, HEAD_SEC, False, move) for move in ('lr', 'ud')]
+        steps += [(x, y, DOT_SEC, True, '') for x, y in VAL_POINTS]
+        for x, y, sec, val, head in steps:
+            if t < sec:
+                return (x, y, t > 1.0, val, head)   # first second: just look at it
+            t -= sec
+        return None
 
-        heading = QLabel('Read the passage below')
-        heading.setStyleSheet('font-size: 22px; font-weight: bold; color: #111;')
-        layout.addWidget(heading)
+    def _tick(self):
+        now = time.time()
+        if now - self.last_face < 0.5:        # face seen -> clock runs
+            self.t += now - self._last_tick
+        self._last_tick = now
+        self.state = self.dot_at(self.t)
+        if self.state is None:
+            self._timer.stop()
+            self._on_cancel = None
+            self._on_done()
+            return
+        self.update()
 
-        passage = QLabel(passage_text)
-        passage.setWordWrap(True)
-        passage.setAlignment(Qt.AlignTop)
-        passage.setStyleSheet('font-size: 28px; color: #222;')
-        layout.addWidget(passage, stretch=1)
-
-        self.countdown = QLabel(f'{seconds}s left')
-        self.countdown.setAlignment(Qt.AlignCenter)
-        self.countdown.setStyleSheet('font-size: 18px; color: #333;')
-        layout.addWidget(self.countdown)
-
-        self.progress = QProgressBar()
-        self.progress.setRange(0, seconds)
-        self.progress.setValue(0)
-        layout.addWidget(self.progress)
-
-        row = QHBoxLayout()
-        row.addStretch(1)
-        exit_btn = QPushButton('Exit Calibration')
-        exit_btn.setStyleSheet(
-            'color: #a00000; font-weight: bold; padding: 6px 16px; font-size: 15px;')
-        exit_btn.clicked.connect(self._ask_exit)
-        row.addWidget(exit_btn)
-        layout.addLayout(row)
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.fillRect(self.rect(), Qt.black)
+        p.setPen(Qt.white)
+        p.setFont(QFont('Arial', 16))
+        if time.time() - self.last_face > 0.5:
+            p.setPen(Qt.red)
+            p.drawText(self.rect(), Qt.AlignHCenter | Qt.AlignTop, '\nFace not detected - look at the camera')
+        elif self.t < READY_SEC:
+            p.drawText(self.rect(), Qt.AlignHCenter | Qt.AlignTop, '\nLook at the dot and follow it with your eyes')
+        if self.state:
+            x, y, recording, val, head = self.state
+            cx, cy = int(x * self.width()), int(y * self.height())
+            if head:
+                # Instruction right under the dot, so it can be read without looking away.
+                p.setPen(QColor('#facc15'))
+                p.setFont(QFont('Arial', 20, QFont.Bold))
+                p.drawText(QRect(cx - 400, cy + 40, 800, 90), Qt.AlignHCenter | Qt.AlignTop,
+                           f'{HEAD_STEPS[head]}\nkeep your eyes on the dot')
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor('#22c55e') if recording else QColor('#ffffff'))
+            p.drawEllipse(QPointF(cx, cy), 18, 18)
+        p.end()
 
     def keyPressEvent(self, event):
-        # Esc is the other way out - this window is full screen, so there is no
-        # title bar to close it with.
+        # Esc is the way out - full screen has no title bar.
         if event.key() == Qt.Key_Escape:
-            self._ask_exit()
-        else:
-            super().keyPressEvent(event)
-
-    def _ask_exit(self):
-        # Leaving throws the whole recording away, so ask first - a misclick
-        # here would cost the student the full two minutes.
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Question)
-        box.setWindowTitle('Exit calibration?')
-        box.setText('Nothing will be saved and no model will be trained. Exit anyway?')
-        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-        box.setDefaultButton(QMessageBox.No)
-        # This window forces a white background on everything under it, so the
-        # dialog needs its own colours - on a dark Windows theme the default
-        # text is white and comes out invisible.
-        box.setStyleSheet(
-            'QMessageBox { background: #ffffff; }'
-            'QLabel { color: #111111; font-size: 14px; }'
-            'QPushButton { color: #111111; background: #e8e8e8;'
-            ' border: 1px solid #999999; padding: 5px 20px; }'
-            'QPushButton:hover { background: #d8d8d8; }')
-        if box.exec() == QMessageBox.Yes:
-            self.close()
-
-    def set_progress(self, elapsed, remaining):
-        self.progress.setValue(elapsed)
-        self.countdown.setText(f'{max(remaining, 0)}s left')
+            answer = QMessageBox.question(self, 'Exit calibration?',
+                                          'Nothing will be saved. Exit anyway?')
+            if answer == QMessageBox.Yes:
+                self.close()
 
     def closeEvent(self, event):
+        self._timer.stop()
         cb = self._on_cancel
         self._on_cancel = None   # fire the cancel callback at most once
         if cb:
@@ -180,22 +201,47 @@ class ReadingWindow(QWidget):
         super().closeEvent(event)
 
 
+class ScreenBorder(QWidget):
+    """See-through, click-through window over the whole screen that draws a red
+    border while the student's eyes are outside their screen area."""
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+                            | Qt.Tool | Qt.WindowTransparentForInput)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setGeometry(QApplication.primaryScreen().geometry())
+        self.off = False
+
+    def set_gaze(self, feats):
+        # off_screen only exists when the student has a screen area.
+        if feats.get('off_screen', False) != self.off:
+            self.off = feats.get('off_screen', False)
+            self.update()
+
+    def paintEvent(self, event):
+        if self.off:
+            p = QPainter(self)
+            p.setPen(QPen(QColor('#ef4444'), 12))
+            p.drawRect(self.rect().adjusted(6, 6, -6, -6))
+            p.end()
+
+
 class CalibrationView(QWidget):
-    """Step 1: record a short sample of the student's NORMAL behaviour while
-    they read a passage in a full-screen window, and save it to JSON
-    (calibration_data/). That JSON is the seed the "Train" button turns into
-    the student's personal model."""
+    """Step 1: dot calibration (like EyeTrax). The student looks at dots in a
+    full-screen window while the camera records their eyes. Each run is ADDED
+    to their calibration JSON (calibration_data/), and "Train Model" trains on
+    every run, so the model gets more accurate each exam."""
 
     def __init__(self, on_proceed=None):
         super().__init__()
         self._on_proceed = on_proceed
         self.worker = None
         self._trainer = None
-        self._reader = None
+        self._reader = None       # the full-screen DotWindow while calibrating
         self._samples = []
         self._user_id = None
-        self._remaining = 0
-        self._elapsed = 0
         self._preview = None      # live face-cam preview shown before recording
 
         card_l = QVBoxLayout(self)
@@ -207,25 +253,12 @@ class CalibrationView(QWidget):
         card_l.addWidget(heading)
 
         instructions = QLabel(
-            'Pick your camera and duration, then press Start Calibration. A '
-            'full-screen reading page opens - read it at your normal pace while '
-            'the camera records. It closes on its own when the timer ends; then '
-            'press Train Model, then Proceed.')
+            'Pick your camera and calibration mode, then press Start Calibration. '
+            'A full-screen window shows dots - look at each dot (or follow the '
+            'moving dot) with your eyes, keeping your head natural. Esc exits. '
+            'When it closes, press Train Model, then Proceed.')
         instructions.setWordWrap(True)
         card_l.addWidget(instructions)
-
-        # The passage the student reads - shown in the full-screen reading
-        # window that opens on Start, not on this setup screen.
-        self._passage_text = (
-            'Effective studying is less about the number of hours spent and more '
-            'about the quality of attention during those hours. When you sit down '
-            'to review, remove the distractions within reach, decide on a single '
-            'goal for the session, and work in focused blocks separated by short '
-            'breaks. As you read, your eyes move across the lines in small jumps, '
-            'pausing briefly to take in groups of words. Try to keep your attention '
-            'on the text in front of you, the way you would during a real '
-            'examination. If your mind wanders, gently bring it back to the '
-            'sentence you were on.')
 
         body = QHBoxLayout()
         body.addStretch(1)
@@ -245,22 +278,17 @@ class CalibrationView(QWidget):
         body.addStretch(1)
         card_l.addLayout(body, stretch=1)
 
-        self.progress = QProgressBar()
-        self.progress.setValue(0)
-        card_l.addWidget(self.progress)
-
         self.status = QLabel('Press Start Calibration to begin.')
         card_l.addWidget(self.status)
 
         controls = QHBoxLayout()
-        controls.addWidget(QLabel('Duration (sec):'))
-        self.duration_box = QComboBox()
-        self.duration_box.addItems(['30', '60', '120'])
-        self.duration_box.setCurrentText('120')
-        controls.addWidget(self.duration_box)
+        controls.addWidget(QLabel('Mode:'))
+        self.mode_box = QComboBox()
+        self.mode_box.addItems(['9 point', '5 point'])
+        controls.addWidget(self.mode_box)
         controls.addWidget(QLabel('Camera:'))
         self.cam_box = QComboBox()
-        populate_camera_combo(self.cam_box, default_index=0)   # by name, not 0/1/2
+        populate_camera_combo(self.cam_box)   # by name; the face camera is picked automatically
         self.cam_box.setMinimumWidth(170)
         self.cam_box.currentIndexChanged.connect(self._restart_preview)
         controls.addWidget(self.cam_box)
@@ -283,10 +311,6 @@ class CalibrationView(QWidget):
         self.cmd_label.setVisible(False)
         card_l.addWidget(self.cmd_label)
 
-        self._timer = QTimer(self)
-        self._timer.setInterval(1000)
-        self._timer.timeout.connect(self._tick)
-
     def _start(self):
         if self.worker is not None:
             return
@@ -301,53 +325,50 @@ class CalibrationView(QWidget):
         self.worker.frame_ready.connect(self._show_frame)
         self.worker.features_ready.connect(self._collect)
         self.worker.start()
-        self._remaining = int(self.duration_box.currentText())
-        self._elapsed = 0
-        self.progress.setRange(0, self._remaining)
-        self.progress.setValue(0)
         self.start_btn.setEnabled(False)
-        self.duration_box.setEnabled(False)
+        self.mode_box.setEnabled(False)
         self.cam_box.setEnabled(False)
         self.cmd_label.setVisible(False)
         self.status.setStyleSheet('')
-        self.status.setText(f'Recording... {self._remaining}s left (reading window is open)')
-        # Pop up the full-screen reading page (passage + countdown + progress).
-        self._reader = ReadingWindow(self._passage_text, self._remaining,
-                                     on_cancel=self._cancel_reading)
+        self.status.setText('Calibrating... (dot window is open)')
+        self._reader = DotWindow(self.mode_box.currentText(),
+                                 on_done=self._finish, on_cancel=self._cancel_reading)
         self._reader.showFullScreen()
-        self._timer.start()
 
     def _collect(self, feats):
-        self._samples.append(feats)
-
-    def _tick(self):
-        self._elapsed += 1
-        self.progress.setValue(self._elapsed)
-        left = self._remaining - self._elapsed
-        self.status.setText(f'Recording... {max(left, 0)}s left (reading window is open)')
-        if self._reader is not None:
-            self._reader.set_progress(self._elapsed, left)
-        if self._elapsed >= self._remaining:
-            self._finish()
+        # Every camera frame with a face: tell the dot window a face is seen,
+        # and keep the frame if a dot is being recorded right now.
+        if self._reader is None:
+            return
+        self._reader.last_face = time.time()
+        state = self._reader.state
+        if state and state[2]:
+            x, y, recording, val, head = state
+            sample = dict(feats)
+            sample['target'] = [x, y]
+            sample['val'] = val           # validation dot - kept out of the area
+            sample['head'] = head         # 'lr' / 'ud' - used for the head correction
+            self._samples.append(sample)
 
     def _finish(self):
-        self._timer.stop()
+        screen = [self._reader.width(), self._reader.height()]
         self._stop_worker()
         self._close_reader()
         self.start_btn.setEnabled(True)
-        self.start_btn.setText('Re-record')
-        self.duration_box.setEnabled(True)
+        self.start_btn.setText('Calibrate Again')
+        self.mode_box.setEnabled(True)
         self.cam_box.setEnabled(True)
         self._restart_preview()   # bring the live camera view back
         if len(self._samples) < 100:
             self.status.setStyleSheet('color: #a00000;')
             self.status.setText(
-                f'Only {len(self._samples)} samples captured. Keep your face in view and record again.')
+                f'Only {len(self._samples)} samples captured. Keep your face in view and calibrate again.')
             return
-        calibration_store.save(self._user_id, self._samples)
+        runs = calibration_store.add_session(self._user_id, self._samples, screen)
         self.status.setStyleSheet('color: #006600;')
         self.status.setText(
-            f'Saved {len(self._samples)} samples for {self._user_id}. Now press Train Model.')
+            f'Saved {len(self._samples)} samples for {self._user_id} '
+            f'({runs} calibration run(s) saved). Now press Train Model.')
         self.train_btn.setEnabled(True)
         self.cmd_label.setVisible(False)
 
@@ -367,11 +388,12 @@ class CalibrationView(QWidget):
     def _train_done(self, result):
         self.train_btn.setEnabled(True)
         self.start_btn.setEnabled(True)
-        pct = 100 * result['flagged'] / result['samples'] if result['samples'] else 0
+        total = result['val_total']
+        pct = 100 * result['val_inside'] / total if total else 0
         self.status.setStyleSheet('color: #006600;')
         self.status.setText(
-            f'Model trained on {result["samples"]} samples '
-            f'({pct:.0f}% flagged). You can now proceed.')
+            f'Screen area built from {result["dots"]} dots ({result["corners"]} corners), head '
+            f'correction from {result["runs"]} run(s). Validation inside: {pct:.0f}%. You can now proceed.')
 
     def _train_failed(self, msg):
         self.train_btn.setEnabled(True)
@@ -435,23 +457,18 @@ class CalibrationView(QWidget):
         # The student exited early: stop and reset. Nothing is written - the
         # JSON is only saved in _finish(), so a cancelled run leaves no file
         # and no model behind.
-        if self._timer.isActive():
-            self._timer.stop()
         self._stop_worker()
         self._reader = None            # it is already closing itself
         self._samples = []             # drop the partial recording
-        self.progress.setValue(0)
         self.start_btn.setEnabled(True)
         self.start_btn.setText('Start Calibration')
-        self.duration_box.setEnabled(True)
+        self.mode_box.setEnabled(True)
         self.cam_box.setEnabled(True)
         self._restart_preview()
         self.status.setStyleSheet('color: #a00000;')
         self.status.setText('Calibration cancelled - nothing was saved.')
 
     def stop_all(self):
-        if self._timer.isActive():
-            self._timer.stop()
         self._stop_preview()
         self._stop_worker()
         self._close_reader()
@@ -473,9 +490,6 @@ class DetectionView(QWidget):
         self.front_log = None
         self.logger = None
         self._count = 0
-        self._side_idx = 1        # side camera, set via the "Choose side camera" popup
-        self._side_label = ''
-
         layout = QVBoxLayout(self)
         heading = QLabel('Live Tracking')
         heading.setStyleSheet('font-weight: bold; font-size: 18px;')
@@ -487,7 +501,11 @@ class DetectionView(QWidget):
         cams_row.addStretch(1)
         cams_row.addWidget(QLabel('Front cam:'))
         self.front_box = QComboBox()
-        populate_camera_combo(self.front_box, default_index=0)
+        names = populate_camera_combo(self.front_box)   # face camera picked automatically
+        # Side camera picked automatically too (the phone if connected);
+        # "Choose side camera" still lets the student change it.
+        self._side_idx = pick_cameras(names)[1]
+        self._side_label = names[self._side_idx] if self._side_idx < len(names) else ''
         self.front_box.setMinimumWidth(150)
         cams_row.addWidget(self.front_box)
         cams_row.addSpacing(16)
@@ -504,6 +522,14 @@ class DetectionView(QWidget):
         self.graph_check.setChecked(True)
         self.graph_check.toggled.connect(self._show_graph)
         cams_row.addWidget(self.graph_check)
+
+        # Red border around the screen while the eyes are off screen.
+        self.border_check = QCheckBox('Show off-screen border')
+        self.border_check.setChecked(True)
+        self.border_check.toggled.connect(self._show_border)
+        cams_row.addWidget(self.border_check)
+        self.border = ScreenBorder()
+        self.hull_view = HullView()     # shown in its own "Graham Scan" window
         cams_row.addStretch(1)
         layout.addLayout(cams_row)
         self._update_side_summary()
@@ -570,6 +596,9 @@ class DetectionView(QWidget):
     def _show_graph(self, on):
         self.graph_box.setVisible(on)
 
+    def _show_border(self, on):
+        self.border.setVisible(on and self.front is not None)   # only while tracking
+
     def _update_side_summary(self):
         name = self._side_label or f'Camera {self._side_idx}'
         self.side_summary.setText(f'Side camera:  {name}')
@@ -605,6 +634,12 @@ class DetectionView(QWidget):
 
         self.graph.set_user(user_id)
         self.front.features_ready.connect(self.graph.on_features)
+
+        self.border.off = False
+        self.front.features_ready.connect(self.border.set_gaze)
+        self.hull_view.set_user(user_id)
+        self.front.features_ready.connect(self.hull_view.on_features)
+        self._show_border(self.border_check.isChecked())
 
         # Front cam rows (gaze + head pose, every frame) go to gaze_logs.
         self.front_log = FrontCamLogWriter()
@@ -666,6 +701,7 @@ class DetectionView(QWidget):
             self.logger.stop()
             self.logger.wait()
             self.logger = None
+        self.border.hide()
         self.front_box.setEnabled(True)
         self.choose_side_btn.setEnabled(True)
         self.button.setText('Start Tracking')
@@ -713,6 +749,7 @@ class AnalysisDashboard(QWidget):
         # Every view, in the order its "open" button appears in the toolbar.
         view_list = [
             ('Front + Side Cam', self.front_side_tab),
+            ('Graham Scan', self.front_side_tab.detect.hull_view),   # live while tracking
             ('Proctor', ProctorView()),
         ]
 

@@ -37,14 +37,33 @@ def list_camera_names():
         return []
 
 
-def populate_camera_combo(combo, default_index=0):
+# Apps that only pretend to be a camera - never the student's face camera.
+VIRTUAL_CAMERAS = ('iriun', 'obs', 'virtual', 'droidcam', 'camo', 'epoccam',
+                   'manycam', 'xsplit', 'snap camera', 'broadcast')
+
+
+def pick_cameras(names=None):
+    """(face camera, side camera) indexes, picked by name. Face = the first real
+    webcam. Side = the phone (Iriun) if there is one, else another real webcam."""
+    names = list_camera_names() if names is None else names
+    real = [i for i, n in enumerate(names) if not any(v in n.lower() for v in VIRTUAL_CAMERAS)]
+    phones = [i for i, n in enumerate(names) if 'iriun' in n.lower()][::-1]   # plain "Iriun Webcam" first
+    front = real[0] if real else 0
+    sides = phones + [i for i in real if i != front]
+    return front, (sides[0] if sides else 1)
+
+
+def populate_camera_combo(combo, default_index=None):
     """Fill a QComboBox with cameras as their name (itemData = index); falls
-    back to 'Camera i' when names can't be read. Selects default_index."""
+    back to 'Camera i' when names can't be read. Selects default_index, or the
+    face camera from pick_cameras() when none is given."""
     combo.clear()
     names = list_camera_names()
     for i in range(max(len(names), MIN_LOCAL_INDEXES)):
         label = names[i] if i < len(names) else f'Camera {i}'
         combo.addItem(label, i)
+    if default_index is None:
+        default_index = pick_cameras(names)[0]
     if 0 <= default_index < combo.count():
         combo.setCurrentIndex(default_index)
     return names
@@ -218,3 +237,12 @@ class SideCameraDialog(QDialog):
         item = self.cam_list.currentItem()
         self.selected_label = item.text() if item else f'Camera {index}'
         self.accept()
+
+
+if __name__ == '__main__':      # self-check: python -m ui.phone_camera
+    this_pc = ['Iriun Webcam #2', 'Iriun Webcam', 'A4tech FHD 1080P PC Camera', 'OBS Virtual Camera']
+    assert pick_cameras(this_pc) == (2, 1)                               # A4tech face, Iriun side
+    assert pick_cameras(['Integrated Camera', 'USB Camera']) == (0, 1)   # two webcams, no phone
+    assert pick_cameras(['OBS Virtual Camera', 'HD Webcam']) == (1, 1)   # only one real camera
+    assert pick_cameras([]) == (0, 1)                                    # names unreadable
+    print('camera pick ok:', pick_cameras())

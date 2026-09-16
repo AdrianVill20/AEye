@@ -36,7 +36,6 @@ HEAD_TH = 5
 
 # --- Cheat-detection tuning ---
 ALERT_SECONDS = 2.0      # a flag must persist this long before it counts
-PITCH_DOWN_TH = 8        # pitch (deg) above this = looking down at desk / notes
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
@@ -298,19 +297,22 @@ class FrontCamWorker(QThread):
                         'pitch': float(pitch),
                         'roll': float(roll),
                     }
+
+                    ready = self.detect and self._detector is not None and self._detector.ready
+                    if ready:
+                        # Off screen = the eyes are outside the student's own screen
+                        # area (the convex hull from their calibration).
+                        off_screen = self._detector.outside(self._prev_h, avg_open, yaw, pitch)
+                        feats['off_screen'] = off_screen   # the red border shows this
+                        color = (0, 0, 255) if off_screen else (0, 255, 255)
+                        cv2.putText(frame, 'OFF SCREEN' if off_screen else 'on screen',
+                                    (10, 135), FONT, 0.7, color, 2)
+
                     self.features_ready.emit(feats)   # calibration collects these
 
-                    # Detection = personalised MODEL + RULE gate + 2s TIME gate.
-                    if self.detect and self._detector is not None and self._detector.ready:
-                        unusual = self._detector.is_anomaly(
-                            (feats['h_ratio'], feats['v_openness'],
-                             feats['yaw'], feats['pitch'], feats['roll']))
-                        # Rule gate: only count it if the EYES are off the screen -
-                        # looking down (desk/notes) or gaze to a side. A head turn
-                        # with eyes still on screen (thinking) is not cheating.
-                        looking_down = (pitch > PITCH_DOWN_TH) or (v_dir == 'Down')
-                        gaze_to_side = (h_dir != 'Center')
-                        suspicious = unusual and (looking_down or gaze_to_side)
+                    # Detection = personal screen area + 2s TIME gate.
+                    if ready:
+                        suspicious = off_screen
 
                         now = time.time()
                         if suspicious:
@@ -328,7 +330,7 @@ class FrontCamWorker(QThread):
                             # MySQL gets one row per incident, not one per frame.
                             if not self._alert_active:
                                 self._alert_active = True
-                                reason = 'looking down' if looking_down else f'gaze {h_dir.lower()}'
+                                reason = 'eyes off screen'
                                 self.cheat_detected.emit({
                                     'kind': 'start',
                                     'source': 'gaze',

@@ -12,11 +12,9 @@ from PySide6.QtCore import Qt, QPointF, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel
 
-from cheat import cheat_detector
 from cheat import calibration_store
 
-PLOTTED = ('h_ratio', 'yaw', 'pitch')
-KEYS = [f for f in cheat_detector.FEATURES if f in PLOTTED]
+KEYS = ['h_ratio', 'yaw', 'pitch']
 LABELS = {'h_ratio': 'eyegaze', 'yaw': 'head sideways', 'pitch': 'head up/down'}
 COLORS = {'h_ratio': QColor(30, 60, 160),
           'yaw': QColor(160, 40, 40),
@@ -40,20 +38,10 @@ def floor_stds(stds):
 
 
 def load_baseline(user_id):
-    """Return (means, stds, source) for KEYS, or None. Never raises."""
-    idx = [cheat_detector.FEATURES.index(k) for k in KEYS]
-
+    """Return (means, stds, source) for KEYS from calibration, or None. Never raises."""
     try:
-        import joblib
-        scaler = joblib.load(cheat_detector.user_model_path(user_id))['scaler']
-        means = [float(scaler.mean_[i]) for i in idx]
-        stds = [float(scaler.scale_[i]) for i in idx]
-        return means, floor_stds(stds), 'model'
-    except Exception:
-        pass
-
-    try:
-        samples = calibration_store.load(user_id)['samples']
+        sessions = calibration_store.load_sessions(user_id)
+        samples = [s for session in sessions for s in session['samples']]
         means, stds = [], []
         for k in KEYS:
             vals = [float(s[k]) for s in samples]
@@ -84,7 +72,7 @@ class PainterPlot(QWidget):
         self._now = time.time()
 
     def redraw(self, times, values):
-        self._now = time.time()
+        self._now = times[-1]    # last frame, not the clock - freezes when tracking stops
         self._times = list(times)
         self._values = {k: list(v) for k, v in values.items()}
         self.update()
@@ -170,7 +158,7 @@ if HAVE_QTCHARTS:
             self.setChart(chart)
 
         def redraw(self, times, values):
-            now = time.time()
+            now = times[-1]      # last frame, not the clock - freezes when tracking stops
             for k in KEYS:
                 pts = [QPointF(t - now, v)
                        for t, v in zip(list(times), list(values[k]))]
