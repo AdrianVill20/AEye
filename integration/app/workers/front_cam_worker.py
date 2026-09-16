@@ -300,17 +300,16 @@ class FrontCamWorker(QThread):
 
                     ready = self.detect and self._detector is not None and self._detector.ready
                     if ready:
-                        # Off screen = the eyes are outside the student's own screen
-                        # area (the convex hull from their calibration).
+                        # check if eyes are outside the screen area
                         off_screen = self._detector.outside(self._prev_h, avg_open, yaw, pitch)
-                        feats['off_screen'] = off_screen   # the red border shows this
+                        feats['off_screen'] = off_screen   # for the red border
                         color = (0, 0, 255) if off_screen else (0, 255, 255)
                         cv2.putText(frame, 'OFF SCREEN' if off_screen else 'on screen',
                                     (10, 135), FONT, 0.7, color, 2)
 
                     self.features_ready.emit(feats)   # calibration collects these
 
-                    # Detection = personal screen area + 2s TIME gate.
+                    # flag if outside for 2 seconds
                     if ready:
                         suspicious = off_screen
 

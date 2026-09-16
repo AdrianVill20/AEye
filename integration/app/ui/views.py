@@ -78,8 +78,7 @@ class ViewWindow(QMdiSubWindow):
 
 
 class TrainWorker(QThread):
-    """Trains a student's model off the UI thread, so the app never freezes
-    while scikit-learn imports and fits. Emits done(result) or failed(msg)."""
+    # Train in the background so the app doesn't freeze.
 
     done = Signal(object)    # result dict from train_cheat_model.train()
     failed = Signal(str)     # error message
@@ -96,26 +95,21 @@ class TrainWorker(QThread):
             self.failed.emit(str(exc))
 
 
-# Dot positions, 0-1 of the screen (like EyeTrax's 9 / 5 point grids).
-# Close to the edges on purpose, so looking at the screen edge counts as normal.
+# dot spots near the screen edges (0 to 1)
 POINTS_9 = [(.5, .5), (.05, .05), (.95, .05), (.05, .95), (.95, .95), (.5, .05), (.05, .5), (.95, .5), (.5, .95)]
 POINTS_5 = [(.5, .5), (.05, .05), (.95, .05), (.05, .95), (.95, .95)]
-# Head movement: eyes stay on the centre dot while the head turns - first left
-# and right, then up and down. Teaches how much the head moves the eye values.
+# head turn steps and what to show
 HEAD_STEPS = {'lr': 'Turn your head slowly LEFT and RIGHT',
               'ud': 'Turn your head slowly UP and DOWN'}
-# Extra dots at the end, NOT used for training - they measure accuracy.
+# test dots, not used to make the area
 VAL_POINTS = [(.3, .3), (.7, .3), (.3, .7), (.7, .7)]
-READY_SEC = 2       # "follow the dot" pause before the first dot
-DOT_SEC = 2         # per dot: 1 s to look at it, then 1 s recording
-HEAD_SEC = 5        # per head dot: 1 s to look at it, then 4 s turning the head
+READY_SEC = 2       # wait before the first dot
+DOT_SEC = 2         # seconds per dot
+HEAD_SEC = 5        # seconds per head turn step
 
 
 class DotWindow(QWidget):
-    """Full-screen dot calibration. The student looks at each dot (or follows
-    the moving dot) while the camera records. The clock only runs while a face
-    is seen, so looking away doesn't waste dots. state = (x, y, recording, val,
-    head) of the dot right now, or None once finished."""
+    # Full screen dots for calibration.
 
     def __init__(self, mode, on_done, on_cancel):
         super().__init__()
@@ -124,32 +118,34 @@ class DotWindow(QWidget):
         self.mode = mode
         self._on_done = on_done
         self._on_cancel = on_cancel
-        self.last_face = 0.0      # set by CalibrationView when a frame has a face
-        self.t = 0.0              # calibration clock (seconds)
+        self.last_face = 0.0      # last time a face was seen
+        self.t = 0.0              # calibration timer
         self._last_tick = time.time()
-        self.state = (.5, .5, False, False, '')
+        self.state = (.5, .5, False, False, '')   # x, y, recording, test dot, head step
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
-        self._timer.start(16)     # ~60 fps
+        self._timer.start(16)     # 60 fps
 
     def dot_at(self, t):
+        # Where the dot is at this time.
         if t < READY_SEC:
             return (.5, .5, False, False, '')
         t -= READY_SEC
         points = POINTS_5 if self.mode == '5 point' else POINTS_9
-        # every step: (x, y, seconds, val, head)
+        # dots, then head turns, then test dots
         steps = [(x, y, DOT_SEC, False, '') for x, y in points]
         steps += [(.5, .5, HEAD_SEC, False, move) for move in ('lr', 'ud')]
         steps += [(x, y, DOT_SEC, True, '') for x, y in VAL_POINTS]
         for x, y, sec, val, head in steps:
             if t < sec:
-                return (x, y, t > 1.0, val, head)   # first second: just look at it
+                return (x, y, t > 1.0, val, head)   # record after 1 second
             t -= sec
         return None
 
     def _tick(self):
+        # Move the timer and the dot.
         now = time.time()
-        if now - self.last_face < 0.5:        # face seen -> clock runs
+        if now - self.last_face < 0.5:        # only count time when a face is seen
             self.t += now - self._last_tick
         self._last_tick = now
         self.state = self.dot_at(self.t)
@@ -161,6 +157,7 @@ class DotWindow(QWidget):
         self.update()
 
     def paintEvent(self, event):
+        # Draw the dot and the text.
         p = QPainter(self)
         p.fillRect(self.rect(), Qt.black)
         p.setPen(Qt.white)
@@ -174,7 +171,7 @@ class DotWindow(QWidget):
             x, y, recording, val, head = self.state
             cx, cy = int(x * self.width()), int(y * self.height())
             if head:
-                # Instruction right under the dot, so it can be read without looking away.
+                # show the head turn text under the dot
                 p.setPen(QColor('#facc15'))
                 p.setFont(QFont('Arial', 20, QFont.Bold))
                 p.drawText(QRect(cx - 400, cy + 40, 800, 90), Qt.AlignHCenter | Qt.AlignTop,
@@ -185,7 +182,7 @@ class DotWindow(QWidget):
         p.end()
 
     def keyPressEvent(self, event):
-        # Esc is the way out - full screen has no title bar.
+        # esc to exit
         if event.key() == Qt.Key_Escape:
             answer = QMessageBox.question(self, 'Exit calibration?',
                                           'Nothing will be saved. Exit anyway?')
@@ -202,8 +199,7 @@ class DotWindow(QWidget):
 
 
 class ScreenBorder(QWidget):
-    """See-through, click-through window over the whole screen that draws a red
-    border while the student's eyes are outside their screen area."""
+    # Red border around the screen when eyes are off screen.
 
     def __init__(self):
         super().__init__()
@@ -215,12 +211,13 @@ class ScreenBorder(QWidget):
         self.off = False
 
     def set_gaze(self, feats):
-        # off_screen only exists when the student has a screen area.
+        # Turn the border on or off.
         if feats.get('off_screen', False) != self.off:
             self.off = feats.get('off_screen', False)
             self.update()
 
     def paintEvent(self, event):
+        # Draw the red border.
         if self.off:
             p = QPainter(self)
             p.setPen(QPen(QColor('#ef4444'), 12))
@@ -229,17 +226,14 @@ class ScreenBorder(QWidget):
 
 
 class CalibrationView(QWidget):
-    """Step 1: dot calibration (like EyeTrax). The student looks at dots in a
-    full-screen window while the camera records their eyes. Each run is ADDED
-    to their calibration JSON (calibration_data/), and "Train Model" trains on
-    every run, so the model gets more accurate each exam."""
+    # Step 1: dot calibration screen.
 
     def __init__(self, on_proceed=None):
         super().__init__()
         self._on_proceed = on_proceed
         self.worker = None
         self._trainer = None
-        self._reader = None       # the full-screen DotWindow while calibrating
+        self._reader = None       # the dot window
         self._samples = []
         self._user_id = None
         self._preview = None      # live face-cam preview shown before recording
@@ -288,7 +282,7 @@ class CalibrationView(QWidget):
         controls.addWidget(self.mode_box)
         controls.addWidget(QLabel('Camera:'))
         self.cam_box = QComboBox()
-        populate_camera_combo(self.cam_box)   # by name; the face camera is picked automatically
+        populate_camera_combo(self.cam_box)   # picks the face camera by itself
         self.cam_box.setMinimumWidth(170)
         self.cam_box.currentIndexChanged.connect(self._restart_preview)
         controls.addWidget(self.cam_box)
@@ -336,8 +330,7 @@ class CalibrationView(QWidget):
         self._reader.showFullScreen()
 
     def _collect(self, feats):
-        # Every camera frame with a face: tell the dot window a face is seen,
-        # and keep the frame if a dot is being recorded right now.
+        # save the frame if the dot is recording
         if self._reader is None:
             return
         self._reader.last_face = time.time()
@@ -346,8 +339,8 @@ class CalibrationView(QWidget):
             x, y, recording, val, head = state
             sample = dict(feats)
             sample['target'] = [x, y]
-            sample['val'] = val           # validation dot - kept out of the area
-            sample['head'] = head         # 'lr' / 'ud' - used for the head correction
+            sample['val'] = val           # test dot
+            sample['head'] = head         # head turn step
             self._samples.append(sample)
 
     def _finish(self):
@@ -501,9 +494,8 @@ class DetectionView(QWidget):
         cams_row.addStretch(1)
         cams_row.addWidget(QLabel('Front cam:'))
         self.front_box = QComboBox()
-        names = populate_camera_combo(self.front_box)   # face camera picked automatically
-        # Side camera picked automatically too (the phone if connected);
-        # "Choose side camera" still lets the student change it.
+        names = populate_camera_combo(self.front_box)   # picks the face camera by itself
+        # pick the side camera by itself (phone first)
         self._side_idx = pick_cameras(names)[1]
         self._side_label = names[self._side_idx] if self._side_idx < len(names) else ''
         self.front_box.setMinimumWidth(150)
@@ -523,13 +515,13 @@ class DetectionView(QWidget):
         self.graph_check.toggled.connect(self._show_graph)
         cams_row.addWidget(self.graph_check)
 
-        # Red border around the screen while the eyes are off screen.
+        # red border checkbox
         self.border_check = QCheckBox('Show off-screen border')
         self.border_check.setChecked(True)
         self.border_check.toggled.connect(self._show_border)
         cams_row.addWidget(self.border_check)
         self.border = ScreenBorder()
-        self.hull_view = HullView()     # shown in its own "Graham Scan" window
+        self.hull_view = HullView()     # graham scan picture
         cams_row.addStretch(1)
         layout.addLayout(cams_row)
         self._update_side_summary()
@@ -597,7 +589,7 @@ class DetectionView(QWidget):
         self.graph_box.setVisible(on)
 
     def _show_border(self, on):
-        self.border.setVisible(on and self.front is not None)   # only while tracking
+        self.border.setVisible(on and self.front is not None)   # only when tracking
 
     def _update_side_summary(self):
         name = self._side_label or f'Camera {self._side_idx}'
@@ -749,7 +741,7 @@ class AnalysisDashboard(QWidget):
         # Every view, in the order its "open" button appears in the toolbar.
         view_list = [
             ('Front + Side Cam', self.front_side_tab),
-            ('Graham Scan', self.front_side_tab.detect.hull_view),   # live while tracking
+            ('Graham Scan', self.front_side_tab.detect.hull_view),   # graham scan tab
             ('Proctor', ProctorView()),
         ]
 

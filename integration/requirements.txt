@@ -11,7 +11,7 @@ ultralytics>=8.3
 pygrabber>=0.2  # lists cameras by name in the pickers / side-camera chooser
 
 # Notes:
-# - The screen area (convex hull / Graham scan) is plain Python, no ML library.
+# - Graham scan needs no extra library.
 # - ultralytics is the YOLO phone detector on the side cam. First run downloads
 #   yolov8s.pt into integration/app/models/ if it isn't there yet.
 # - mediapipe 0.10.x needs numpy 1.x, so numpy is pinned below 2.0.

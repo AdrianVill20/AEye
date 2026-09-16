@@ -38,7 +38,7 @@ def floor_stds(stds):
 
 
 def load_baseline(user_id):
-    """Return (means, stds, source) for KEYS from calibration, or None. Never raises."""
+    # Average and spread from calibration, or None.
     try:
         sessions = calibration_store.load_sessions(user_id)
         samples = [s for session in sessions for s in session['samples']]
@@ -72,7 +72,7 @@ class PainterPlot(QWidget):
         self._now = time.time()
 
     def redraw(self, times, values):
-        self._now = times[-1]    # last frame, not the clock - freezes when tracking stops
+        self._now = times[-1]    # stops moving when tracking stops
         self._times = list(times)
         self._values = {k: list(v) for k, v in values.items()}
         self.update()
@@ -158,7 +158,7 @@ if HAVE_QTCHARTS:
             self.setChart(chart)
 
         def redraw(self, times, values):
-            now = times[-1]      # last frame, not the clock - freezes when tracking stops
+            now = times[-1]      # stops moving when tracking stops
             for k in KEYS:
                 pts = [QPointF(t - now, v)
                        for t, v in zip(list(times), list(values[k]))]

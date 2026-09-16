@@ -1,18 +1,5 @@
-"""Build a student's screen area from their saved calibration runs.
-
-Usually you don't need this - the calibration screen's "Train Model" button
-does it in-app. To run it manually, from integration/app:
-
-    ../.venv/Scripts/python.exe -m cheat.train_cheat_model --user ichoy
-
-Steps:
-  1. Head correction from ALL runs: on the head-movement dots the eyes stay on
-     one spot while the head turns, so eye value + k * head angle should stay
-     the same. k is the least-squares value that keeps it the same. More runs =
-     steadier k.
-  2. Screen area from the NEWEST run - it matches how the student sits for this
-     exam. One point per dot (the median of its frames), Graham scan, grow.
-"""
+# Make the student's screen area from their calibration.
+# Run by hand from integration/app:  ../.venv/Scripts/python.exe -m cheat.train_cheat_model --user ichoy
 
 import argparse
 import json
@@ -23,8 +10,7 @@ from cheat.cheat_detector import CheatDetector, MARGIN, graham_scan, grow, user_
 
 
 def head_k(samples, eye, head):
-    """How much the eye value moves per degree of head turn. Frames are grouped
-    by run + dot so only the head movement counts, not the dot position."""
+    # How much the eyes move when the head turns.
     groups = {}
     for run, s in samples:
         if s.get('head') and s.get('target'):
@@ -39,8 +25,7 @@ def head_k(samples, eye, head):
 
 
 def dot_points(session, area):
-    """One point per calibration dot: the median of its ~30 frames. The median
-    ignores stray frames (blinks, a glance away) that would stretch the hull."""
+    # One point per dot (middle value of its frames).
     dots = {}
     for s in session['samples']:
         if s.get('target') and not s.get('head') and not s.get('val'):
@@ -51,8 +36,7 @@ def dot_points(session, area):
 
 
 def newest_dots(sessions, area):
-    """Dot points of the newest run that has enough dots - it matches how the
-    student sits for this exam. [] if no run is usable."""
+    # Dot points from the newest good calibration.
     for session in reversed(sessions):
         points = dot_points(session, area)
         if len(points) >= 3:
@@ -61,22 +45,23 @@ def newest_dots(sessions, area):
 
 
 def train(user):
-    """Build and save the student's screen area. Returns a summary dict.
-    Raises FileNotFoundError if there is no calibration, ValueError if no run
-    has enough dots."""
+    # Make and save the screen area.
     sessions = load_sessions(user)
     if not sessions:
         raise FileNotFoundError(f'No dot calibration saved for "{user}".')
 
+    # head fix uses all calibrations
     samples = [(run, s) for run, session in enumerate(sessions) for s in session['samples']]
     area = CheatDetector(kx=head_k(samples, 'h_ratio', 'yaw'),
                          ky=head_k(samples, 'v_openness', 'pitch'))
 
+    # screen area uses the newest calibration
     points, session = newest_dots(sessions, area)
     if not points:
         raise ValueError(f'No usable dot calibration for "{user}" - calibrate again, '
                          f'keeping your face in view.')
 
+    # graham scan, then make it a bit bigger
     area.hull = grow(graham_scan(points), MARGIN)
     out = user_model_path(user)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -84,8 +69,7 @@ def train(user):
         json.dump({'user': user, 'hull': [list(p) for p in area.hull],
                    'kx': area.kx, 'ky': area.ky}, f)
 
-    # Check: the validation dots were NOT used to build the area, so how many
-    # of their frames land inside is how well it covers the screen.
+    # check: test dots should be inside
     val = [s for s in session['samples'] if s.get('val')]
     inside = sum(not area.outside(s['h_ratio'], s['v_openness'], s['yaw'], s['pitch']) for s in val)
     return {'dots': len(points), 'corners': len(area.hull), 'runs': len(sessions),
@@ -94,6 +78,7 @@ def train(user):
 
 
 def main():
+    # Train from the command line.
     ap = argparse.ArgumentParser()
     ap.add_argument('--user', required=True,
                     help='student id (matches the calibration JSON / login)')

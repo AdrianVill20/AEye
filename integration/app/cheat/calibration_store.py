@@ -1,17 +1,4 @@
-"""Read / write per-student calibration data as JSON.
-
-Every dot calibration run is ADDED as a new session instead of overwriting the
-old one, so the student's model is trained on more data every exam.
-
-One file per student:  calibration_data/calibration_<user>.json
-    {'user': ..., 'sessions': [{'saved_at', 'screen', 'samples': [...]}, ...]}
-
-Each sample is one camera frame taken while a dot was on screen:
-    h_ratio, v_openness, yaw, pitch, roll   (from the front camera)
-    target  [x, y] where the dot was, 0-1 of the screen
-    val     True = validation dot (kept out of the screen area, used to check it)
-    head    'lr' / 'ud' = head-movement dot (turn left-right / up-down), '' = normal
-"""
+# Save and load each student's calibration runs (a new run is added, never overwritten).
 
 import json
 import re
@@ -19,7 +6,7 @@ from datetime import datetime
 
 from paths import CALIB_DIR
 
-MAX_SESSIONS = 10   # keep the last 10 runs so the file doesn't grow forever
+MAX_SESSIONS = 10   # only keep the last 10 runs
 
 
 def _safe(user_id):
@@ -31,20 +18,21 @@ def calib_path(user_id):
 
 
 def load_sessions(user_id):
-    """All saved calibration runs for a student, oldest first ([] if none)."""
+    # Get all saved runs, oldest first.
     path = calib_path(user_id)
     if not path.exists():
         return []
     with open(path, encoding='utf-8') as f:
         data = json.load(f)
-    return data.get('sessions', [])   # old read-passage files have no sessions
+    return data.get('sessions', [])   # old files have no runs
 
 
 def save_sessions(user_id, sessions):
-    """Written atomically (temp file + replace) so a crash can't corrupt it."""
+    # Save the runs to the file.
     CALIB_DIR.mkdir(parents=True, exist_ok=True)
     payload = {'user': user_id, 'sessions': sessions[-MAX_SESSIONS:]}
     path = calib_path(user_id)
+    # write to a temp file first so a crash can't break it
     tmp = path.with_suffix('.json.tmp')
     with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(payload, f)
@@ -53,12 +41,12 @@ def save_sessions(user_id, sessions):
 
 
 def add_session(user_id, samples, screen):
-    """Append one calibration run. Returns how many runs are saved now."""
+    # Add one new run and return how many runs are saved.
     sessions = load_sessions(user_id)
     sessions.append({
         'saved_at': datetime.now().isoformat(timespec='seconds'),
         'screen': screen,
-        'samples': samples,
+        'samples': samples,   # each: h_ratio, v_openness, yaw, pitch, roll, target, val, head
     })
     save_sessions(user_id, sessions)
     return min(len(sessions), MAX_SESSIONS)
