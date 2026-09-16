@@ -1,4 +1,5 @@
 # Screen area made with a Graham scan, and a check if the eyes are outside it.
+# Isolation Forest scores how unusual a moment is for this student.
 
 import json
 import math
@@ -6,7 +7,8 @@ import re
 
 from paths import MODELS_DIR
 
-FEATURES = ['h_ratio', 'v_openness']   # the two eye values we use
+# values the isolation forest uses (same order as training)
+FEATURES = ['h_ratio', 'v_openness', 'yaw', 'pitch', 'roll']
 # how much to grow the outline (1.11 = exactly the screen edge, lower = stricter)
 MARGIN = 1.20
 
@@ -15,6 +17,12 @@ def user_model_path(user_id):
     # File where the student's screen area is saved.
     safe = re.sub(r'[^A-Za-z0-9_-]+', '_', str(user_id)) if user_id else 'unknown'
     return MODELS_DIR / f'screen_area_{safe}.json'
+
+
+def forest_model_path(user_id):
+    # File where the student's isolation forest is saved.
+    safe = re.sub(r'[^A-Za-z0-9_-]+', '_', str(user_id)) if user_id else 'unknown'
+    return MODELS_DIR / f'cheat_model_{safe}.joblib'
 
 
 def cross(o, a, b):
@@ -50,10 +58,10 @@ def grow(hull, margin=MARGIN):
 class CheatDetector:
     # Holds the screen area and checks the eyes against it.
 
-    def __init__(self, hull=None, kx=0.0, ky=0.0):
+    def __init__(self, hull=None, scaler=None, model=None):
         self.hull = hull
-        self.kx = kx   # how much head left/right moves the eyes
-        self.ky = ky   # how much head up/down moves the eyes
+        self.scaler = scaler   # isolation forest scaler
+        self.model = model     # isolation forest
 
     @property
     def ready(self):
@@ -62,29 +70,44 @@ class CheatDetector:
 
     @classmethod
     def load(cls, user_id=None):
-        # Load the saved screen area, or an empty one.
+        # Load the saved screen area and isolation forest (either can be missing).
+        detector = cls()
         try:
             with open(user_model_path(user_id), encoding='utf-8') as f:
                 data = json.load(f)
-            hull = [tuple(p) for p in data['hull']]
-            print(f'[CHEAT] Loaded screen area for "{user_id}" ({len(hull)} corners).')
-            return cls(hull, data.get('kx', 0.0), data.get('ky', 0.0))
+            detector.hull = [tuple(p) for p in data['hull']]
+            print(f'[CHEAT] Loaded screen area for "{user_id}" ({len(detector.hull)} corners).')
         except Exception as exc:
             print(f'[CHEAT] No screen area for "{user_id}" ({exc}); detection off.')
-            return cls()
+        try:
+            import joblib
+            bundle = joblib.load(forest_model_path(user_id))
+            detector.scaler, detector.model = bundle['scaler'], bundle['model']
+            print(f'[CHEAT] Loaded isolation forest for "{user_id}".')
+        except Exception as exc:
+            print(f'[CHEAT] No isolation forest for "{user_id}" ({exc}); no severity.')
+        return detector
 
-    def point(self, h_ratio, v_openness, yaw, pitch):
-        # Eye values fixed for head turn.
-        return (h_ratio + self.kx * yaw, v_openness + self.ky * pitch)
-
-    def outside(self, h_ratio, v_openness, yaw=0.0, pitch=0.0):
+    def outside(self, h_ratio, v_openness):
         # True if the eyes are outside the screen area.
         if not self.ready:
             return False
-        p = self.point(h_ratio, v_openness, yaw, pitch)
+        p = (h_ratio, v_openness)
         # inside = every edge turns left to the point
         return any(cross(self.hull[i], self.hull[(i + 1) % len(self.hull)], p) < 0
                    for i in range(len(self.hull)))
+
+    def is_anomaly(self, values):
+        # True if the isolation forest thinks this is unusual (values in FEATURES order).
+        if self.scaler is None or self.model is None:
+            return False
+        try:
+            import numpy as np
+            x = np.asarray(values, dtype=float).reshape(1, -1)
+            x = self.scaler.transform(x)
+            return self.model.predict(x)[0] == -1   # -1 = unusual
+        except Exception:
+            return False
 
 
 if __name__ == '__main__':      # test: python -m cheat.cheat_detector
@@ -95,6 +118,5 @@ if __name__ == '__main__':      # test: python -m cheat.cheat_detector
     assert area.outside(3, 1) and area.outside(1, -0.5)          # right, below
     assert not CheatDetector(grow(square, 2.0)).outside(3, 1)    # bigger outline covers it
     assert not CheatDetector().outside(99, 99)                   # no area = no flag
-    turned = CheatDetector(grow(square, 1.0), kx=0.1)
-    assert not turned.outside(1, 1) and turned.outside(1, 1, yaw=15)   # head turned away
+    assert not CheatDetector().is_anomaly([0.5, 0.1, 0, 8, 0])   # no forest = normal
     print('hull ok:', square)

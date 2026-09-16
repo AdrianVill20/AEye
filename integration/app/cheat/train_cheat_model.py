@@ -5,43 +5,50 @@ import argparse
 import json
 from statistics import median
 
+import numpy as np
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import IsolationForest
+import joblib
+
 from cheat.calibration_store import load_sessions
-from cheat.cheat_detector import CheatDetector, MARGIN, graham_scan, grow, user_model_path
+from cheat.cheat_detector import (CheatDetector, FEATURES, MARGIN, forest_model_path,
+                                  graham_scan, grow, user_model_path)
 
 
-def head_k(samples, eye, head):
-    # How much the eyes move when the head turns.
-    groups = {}
-    for run, s in samples:
-        if s.get('head') and s.get('target'):
-            groups.setdefault((run, tuple(s['target'])), []).append(s)
-    top = bottom = 0.0
-    for g in groups.values():
-        eye_mean = sum(s[eye] for s in g) / len(g)
-        head_mean = sum(s[head] for s in g) / len(g)
-        top += sum((s[eye] - eye_mean) * (s[head] - head_mean) for s in g)
-        bottom += sum((s[head] - head_mean) ** 2 for s in g)
-    return -top / bottom if bottom else 0.0
-
-
-def dot_points(session, area):
+def dot_points(session):
     # One point per dot (middle value of its frames).
     dots = {}
     for s in session['samples']:
+        # skip test dots, and head turn frames from older calibrations
         if s.get('target') and not s.get('head') and not s.get('val'):
-            dots.setdefault(tuple(s['target']), []).append(
-                area.point(s['h_ratio'], s['v_openness'], s['yaw'], s['pitch']))
+            dots.setdefault(tuple(s['target']), []).append((s['h_ratio'], s['v_openness']))
     return [(median(p[0] for p in d), median(p[1] for p in d))
             for d in dots.values() if len(d) >= 10]
 
 
-def newest_dots(sessions, area):
+def newest_dots(sessions):
     # Dot points from the newest good calibration.
     for session in reversed(sessions):
-        points = dot_points(session, area)
+        points = dot_points(session)
         if len(points) >= 3:
             return points, session
     return [], None
+
+
+def train_forest(user, samples, contamination=0.03):
+    # Train the isolation forest on every calibration frame (old AEye code).
+    X = np.array([[s[f] for f in FEATURES] for run, s in samples], dtype=float)
+    scaler = StandardScaler().fit(X)
+    Xs = scaler.transform(X)
+    model = IsolationForest(n_estimators=200, contamination=contamination,
+                            random_state=42)
+    model.fit(Xs)
+    flagged = int((model.predict(Xs) == -1).sum())
+
+    out = forest_model_path(user)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump({'scaler': scaler, 'model': model, 'features': FEATURES}, out)
+    return len(X), flagged
 
 
 def train(user):
@@ -50,31 +57,29 @@ def train(user):
     if not sessions:
         raise FileNotFoundError(f'No dot calibration saved for "{user}".')
 
-    # head fix uses all calibrations
-    samples = [(run, s) for run, session in enumerate(sessions) for s in session['samples']]
-    area = CheatDetector(kx=head_k(samples, 'h_ratio', 'yaw'),
-                         ky=head_k(samples, 'v_openness', 'pitch'))
-
     # screen area uses the newest calibration
-    points, session = newest_dots(sessions, area)
+    points, session = newest_dots(sessions)
     if not points:
         raise ValueError(f'No usable dot calibration for "{user}" - calibrate again, '
                          f'keeping your face in view.')
 
     # graham scan, then make it a bit bigger
-    area.hull = grow(graham_scan(points), MARGIN)
+    area = CheatDetector(grow(graham_scan(points), MARGIN))
     out = user_model_path(user)
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, 'w', encoding='utf-8') as f:
-        json.dump({'user': user, 'hull': [list(p) for p in area.hull],
-                   'kx': area.kx, 'ky': area.ky}, f)
+        json.dump({'user': user, 'hull': [list(p) for p in area.hull]}, f)
 
     # check: test dots should be inside
     val = [s for s in session['samples'] if s.get('val')]
-    inside = sum(not area.outside(s['h_ratio'], s['v_openness'], s['yaw'], s['pitch']) for s in val)
+    inside = sum(not area.outside(s['h_ratio'], s['v_openness']) for s in val)
+
+    # isolation forest on all frames of all calibrations
+    samples = [(run, s) for run, session in enumerate(sessions) for s in session['samples']]
+    frames, flagged = train_forest(user, samples)
     return {'dots': len(points), 'corners': len(area.hull), 'runs': len(sessions),
-            'val_inside': inside, 'val_total': len(val), 'kx': area.kx, 'ky': area.ky,
-            'model_path': str(out)}
+            'val_inside': inside, 'val_total': len(val),
+            'frames': frames, 'flagged': flagged, 'model_path': str(out)}
 
 
 def main():
@@ -93,10 +98,11 @@ def main():
 
     pct = 100 * result['val_inside'] / result['val_total'] if result['val_total'] else 0
     print(f"[TRAIN] Screen area from {result['dots']} dots of the newest run: "
-          f"{result['corners']} corners. Head correction from {result['runs']} run(s): "
-          f"kx={result['kx']:.4f} ky={result['ky']:.4f}")
+          f"{result['corners']} corners.")
     print(f"[TRAIN] Validation frames inside the area: "
           f"{result['val_inside']}/{result['val_total']} ({pct:.0f}%).")
+    print(f"[TRAIN] Isolation forest on {result['frames']} frames; "
+          f"{result['flagged']} ({100 * result['flagged'] / result['frames']:.1f}%) count as unusual.")
     print(f"[TRAIN] Saved -> {result['model_path']}")
 
 

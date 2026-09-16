@@ -19,12 +19,12 @@ RIGHT_IRIS_CENTER = 468
 LEFT_IRIS_CENTER = 473
 
 RIGHT_EYE_CORNERS = (33, 133)
-LEFT_EYE_CORNERS = (263, 362)
+LEFT_EYE_CORNERS = (362, 263)
 
-RIGHT_UPPER_LIDS = [159, 160, 161, 186]
-RIGHT_LOWER_LIDS = [145, 144, 146, 153]
-LEFT_UPPER_LIDS = [386, 374, 373, 382]
-LEFT_LOWER_LIDS = [374, 373, 372, 380]
+RIGHT_UPPER_LIDS = [160, 159, 158]
+RIGHT_LOWER_LIDS = [144, 145, 153]
+LEFT_UPPER_LIDS = [385, 386, 387]
+LEFT_LOWER_LIDS = [380, 374, 373]
 
 H_LEFT_THRESH = 0.42
 H_RIGHT_THRESH = 0.58
@@ -147,7 +147,7 @@ class FrontCamWorker(QThread):
         self._anom_since = None
         self._alert_active = False
         if self.detect:
-            from cheat.cheat_detector import CheatDetector
+            from cheat.cheat_detector import CheatDetector, FEATURES
             self._detector = CheatDetector.load(self.session_user_id)
 
         options = vision.FaceLandmarkerOptions(
@@ -300,12 +300,16 @@ class FrontCamWorker(QThread):
 
                     ready = self.detect and self._detector is not None and self._detector.ready
                     if ready:
-                        # check if eyes are outside the screen area
-                        off_screen = self._detector.outside(self._prev_h, avg_open, yaw, pitch)
+                        # graham scan: are the eyes outside the screen area
+                        off_screen = self._detector.outside(self._prev_h, avg_open)
+                        # isolation forest: is this unusual for the student
+                        unusual = self._detector.is_anomaly([feats[f] for f in FEATURES])
                         feats['off_screen'] = off_screen   # for the red border
+                        text = 'OFF SCREEN' if off_screen else 'on screen'
+                        if unusual:
+                            text += ' - unusual'
                         color = (0, 0, 255) if off_screen else (0, 255, 255)
-                        cv2.putText(frame, 'OFF SCREEN' if off_screen else 'on screen',
-                                    (10, 135), FONT, 0.7, color, 2)
+                        cv2.putText(frame, text, (10, 135), FONT, 0.7, color, 2)
 
                     self.features_ready.emit(feats)   # calibration collects these
 
@@ -317,6 +321,9 @@ class FrontCamWorker(QThread):
                         if suspicious:
                             if self._anom_since is None:
                                 self._anom_since = now
+                                self._frames = self._odd = 0   # count unusual frames in this look
+                            self._frames += 1
+                            self._odd += unusual
                             held = now - self._anom_since
                         else:
                             self._anom_since = None
@@ -330,6 +337,8 @@ class FrontCamWorker(QThread):
                             if not self._alert_active:
                                 self._alert_active = True
                                 reason = 'eyes off screen'
+                                if self._odd * 2 >= self._frames:   # half the look was unusual
+                                    reason += ' (unusual)'
                                 self.cheat_detected.emit({
                                     'kind': 'start',
                                     'source': 'gaze',

@@ -31,14 +31,13 @@ class HullView(QWidget):
         # Load this student's screen area.
         self.area = CheatDetector.load(user_id)
         self.trail.clear()
-        self.dots = newest_dots(load_sessions(user_id), self.area)[0] if self.area.ready else []
+        self.dots = newest_dots(load_sessions(user_id))[0] if self.area.ready else []
         self.scan = graham_scan(self.dots) if len(self.dots) >= 3 else []
 
     def on_features(self, feats):
         # Add the newest eye point.
         if self.area.ready:
-            self.trail.append(self.area.point(feats['h_ratio'], feats['v_openness'],
-                                              feats['yaw'], feats['pitch']))
+            self.trail.append((feats['h_ratio'], feats['v_openness']))
             self.off = feats.get('off_screen', False)
 
     def paintEvent(self, event):

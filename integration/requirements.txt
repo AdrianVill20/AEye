@@ -7,11 +7,14 @@ opencv-python>=4.10
 mediapipe>=0.10.21
 numpy>=1.26,<2.0
 mysql-connector-python>=9.0
+scikit-learn>=1.5
+joblib>=1.4
 ultralytics>=8.3
 pygrabber>=0.2  # lists cameras by name in the pickers / side-camera chooser
 
 # Notes:
 # - Graham scan needs no extra library.
+# - scikit-learn + joblib are for the isolation forest (unusual / severity).
 # - ultralytics is the YOLO phone detector on the side cam. First run downloads
 #   yolov8s.pt into integration/app/models/ if it isn't there yet.
 # - mediapipe 0.10.x needs numpy 1.x, so numpy is pinned below 2.0.

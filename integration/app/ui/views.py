@@ -1,6 +1,6 @@
 import time
 from pathlib import Path
-from PySide6.QtCore import Qt, QTimer, QThread, Signal, QPointF, QRect
+from PySide6.QtCore import Qt, QTimer, QThread, Signal, QPointF
 from PySide6.QtGui import QPixmap, QPainter, QColor, QFont, QPen
 from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QFrame, QComboBox, QMdiArea, QMdiSubWindow, QSizePolicy, QSplitter, QStackedWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QInputDialog, QCheckBox
 from paths import APP_DIR
@@ -98,14 +98,10 @@ class TrainWorker(QThread):
 # dot spots near the screen edges (0 to 1)
 POINTS_9 = [(.5, .5), (.05, .05), (.95, .05), (.05, .95), (.95, .95), (.5, .05), (.05, .5), (.95, .5), (.5, .95)]
 POINTS_5 = [(.5, .5), (.05, .05), (.95, .05), (.05, .95), (.95, .95)]
-# head turn steps and what to show
-HEAD_STEPS = {'lr': 'Turn your head slowly LEFT and RIGHT',
-              'ud': 'Turn your head slowly UP and DOWN'}
 # test dots, not used to make the area
 VAL_POINTS = [(.3, .3), (.7, .3), (.3, .7), (.7, .7)]
 READY_SEC = 2       # wait before the first dot
 DOT_SEC = 2         # seconds per dot
-HEAD_SEC = 5        # seconds per head turn step
 
 
 class DotWindow(QWidget):
@@ -121,7 +117,7 @@ class DotWindow(QWidget):
         self.last_face = 0.0      # last time a face was seen
         self.t = 0.0              # calibration timer
         self._last_tick = time.time()
-        self.state = (.5, .5, False, False, '')   # x, y, recording, test dot, head step
+        self.state = (.5, .5, False, False)   # x, y, recording, test dot
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(16)     # 60 fps
@@ -129,18 +125,16 @@ class DotWindow(QWidget):
     def dot_at(self, t):
         # Where the dot is at this time.
         if t < READY_SEC:
-            return (.5, .5, False, False, '')
+            return (.5, .5, False, False)
         t -= READY_SEC
         points = POINTS_5 if self.mode == '5 point' else POINTS_9
-        # dots, then head turns, then test dots
-        steps = [(x, y, DOT_SEC, False, '') for x, y in points]
-        steps += [(.5, .5, HEAD_SEC, False, move) for move in ('lr', 'ud')]
-        steps += [(x, y, DOT_SEC, True, '') for x, y in VAL_POINTS]
-        for x, y, sec, val, head in steps:
-            if t < sec:
-                return (x, y, t > 1.0, val, head)   # record after 1 second
-            t -= sec
-        return None
+        # dots, then test dots
+        steps = [(x, y, False) for x, y in points] + [(x, y, True) for x, y in VAL_POINTS]
+        i = int(t // DOT_SEC)
+        if i >= len(steps):
+            return None
+        x, y, val = steps[i]
+        return (x, y, t % DOT_SEC > 1.0, val)   # record after 1 second
 
     def _tick(self):
         # Move the timer and the dot.
@@ -168,14 +162,8 @@ class DotWindow(QWidget):
         elif self.t < READY_SEC:
             p.drawText(self.rect(), Qt.AlignHCenter | Qt.AlignTop, '\nLook at the dot and follow it with your eyes')
         if self.state:
-            x, y, recording, val, head = self.state
+            x, y, recording, val = self.state
             cx, cy = int(x * self.width()), int(y * self.height())
-            if head:
-                # show the head turn text under the dot
-                p.setPen(QColor('#facc15'))
-                p.setFont(QFont('Arial', 20, QFont.Bold))
-                p.drawText(QRect(cx - 400, cy + 40, 800, 90), Qt.AlignHCenter | Qt.AlignTop,
-                           f'{HEAD_STEPS[head]}\nkeep your eyes on the dot')
             p.setPen(Qt.NoPen)
             p.setBrush(QColor('#22c55e') if recording else QColor('#ffffff'))
             p.drawEllipse(QPointF(cx, cy), 18, 18)
@@ -248,8 +236,8 @@ class CalibrationView(QWidget):
 
         instructions = QLabel(
             'Pick your camera and calibration mode, then press Start Calibration. '
-            'A full-screen window shows dots - look at each dot (or follow the '
-            'moving dot) with your eyes, keeping your head natural. Esc exits. '
+            'A full-screen window shows dots - look at each dot with your eyes, '
+            'keeping your head natural. Esc exits. '
             'When it closes, press Train Model, then Proceed.')
         instructions.setWordWrap(True)
         card_l.addWidget(instructions)
@@ -336,11 +324,10 @@ class CalibrationView(QWidget):
         self._reader.last_face = time.time()
         state = self._reader.state
         if state and state[2]:
-            x, y, recording, val, head = state
+            x, y, recording, val = state
             sample = dict(feats)
             sample['target'] = [x, y]
             sample['val'] = val           # test dot
-            sample['head'] = head         # head turn step
             self._samples.append(sample)
 
     def _finish(self):
@@ -386,7 +373,8 @@ class CalibrationView(QWidget):
         self.status.setStyleSheet('color: #006600;')
         self.status.setText(
             f'Screen area built from {result["dots"]} dots ({result["corners"]} corners), head '
-            f'correction from {result["runs"]} run(s). Validation inside: {pct:.0f}%. You can now proceed.')
+            f'correction from {result["runs"]} run(s). Validation inside: {pct:.0f}%. '
+            f'Isolation forest on {result["frames"]} frames. You can now proceed.')
 
     def _train_failed(self, msg):
         self.train_btn.setEnabled(True)

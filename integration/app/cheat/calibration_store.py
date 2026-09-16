@@ -46,7 +46,7 @@ def add_session(user_id, samples, screen):
     sessions.append({
         'saved_at': datetime.now().isoformat(timespec='seconds'),
         'screen': screen,
-        'samples': samples,   # each: h_ratio, v_openness, yaw, pitch, roll, target, val, head
+        'samples': samples,   # each: h_ratio, v_openness, yaw, pitch, roll, target, val
     })
     save_sessions(user_id, sessions)
     return min(len(sessions), MAX_SESSIONS)
