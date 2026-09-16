@@ -312,6 +312,8 @@ class FrontCamWorker(QThread):
                         'yaw': float(yaw),
                         'pitch': float(pitch),
                         'roll': float(roll),
+                        # forehead, chin, left and right side of the face (0 to 1 of the frame)
+                        'face_pts': [(lm[i].x, lm[i].y) for i in (10, 152, 234, 454)],
                     }
 
                     ready = self.detect and self._detector is not None and self._detector.ready

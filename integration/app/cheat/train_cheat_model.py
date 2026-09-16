@@ -22,17 +22,18 @@ def dot_points(session):
         # skip test dots, and head turn frames from older calibrations
         if s.get('target') and not s.get('head') and not s.get('val'):
             dots.setdefault(tuple(s['target']), []).append((s['h_ratio'], s['v_openness']))
-    return [(median(p[0] for p in d), median(p[1] for p in d))
-            for d in dots.values() if len(d) >= 10]
+    return {t: (median(p[0] for p in d), median(p[1] for p in d))
+            for t, d in dots.items() if len(d) >= 10}
 
 
-def newest_dots(sessions):
-    # Dot points from the newest good calibration.
-    for session in reversed(sessions):
-        points = dot_points(session)
-        if len(points) >= 3:
-            return points, session
-    return [], None
+def average_dots(sessions):
+    # One point per dot: the average of that dot over every calibration.
+    runs = {}
+    for session in sessions:
+        for t, point in dot_points(session).items():
+            runs.setdefault(t, []).append(point)
+    return [(sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
+            for pts in runs.values()]
 
 
 def train_forest(user, samples, contamination=0.03):
@@ -57,9 +58,9 @@ def train(user):
     if not sessions:
         raise FileNotFoundError(f'No dot calibration saved for "{user}".')
 
-    # screen area uses the newest calibration
-    points, session = newest_dots(sessions)
-    if not points:
+    # screen area uses the average of every calibration
+    points = average_dots(sessions)
+    if len(points) < 3:
         raise ValueError(f'No usable dot calibration for "{user}" - calibrate again, '
                          f'keeping your face in view.')
 
@@ -71,7 +72,7 @@ def train(user):
         json.dump({'user': user, 'hull': [list(p) for p in area.hull]}, f)
 
     # check: test dots should be inside
-    val = [s for s in session['samples'] if s.get('val')]
+    val = [s for session in sessions for s in session['samples'] if s.get('val')]
     inside = sum(not area.outside(s['h_ratio'], s['v_openness']) for s in val)
 
     # isolation forest on all frames of all calibrations
@@ -97,7 +98,7 @@ def main():
         raise SystemExit(f'[TRAIN] {exc}')
 
     pct = 100 * result['val_inside'] / result['val_total'] if result['val_total'] else 0
-    print(f"[TRAIN] Screen area from {result['dots']} dots of the newest run: "
+    print(f"[TRAIN] Screen area from {result['dots']} dots averaged over {result['runs']} run(s): "
           f"{result['corners']} corners.")
     print(f"[TRAIN] Validation frames inside the area: "
           f"{result['val_inside']}/{result['val_total']} ({pct:.0f}%).")

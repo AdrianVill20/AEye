@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QWidget
 
 from cheat.calibration_store import load_sessions
 from cheat.cheat_detector import CheatDetector, graham_scan
-from cheat.train_cheat_model import newest_dots
+from cheat.train_cheat_model import average_dots
 
 
 class HullView(QWidget):
@@ -31,7 +31,7 @@ class HullView(QWidget):
         # Load this student's screen area.
         self.area = CheatDetector.load(user_id)
         self.trail.clear()
-        self.dots = newest_dots(load_sessions(user_id))[0] if self.area.ready else []
+        self.dots = average_dots(load_sessions(user_id)) if self.area.ready else []
         self.scan = graham_scan(self.dots) if len(self.dots) >= 3 else []
 
     def on_features(self, feats):

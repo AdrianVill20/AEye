@@ -1,7 +1,7 @@
 import time
 from pathlib import Path
-from PySide6.QtCore import Qt, QTimer, QThread, Signal, QPointF
-from PySide6.QtGui import QPixmap, QPainter, QColor, QFont, QPen
+from PySide6.QtCore import Qt, QTimer, QThread, Signal, QPointF, QRectF
+from PySide6.QtGui import QPixmap, QPainter, QPainterPath, QTransform, QColor, QFont, QPen
 from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QFrame, QComboBox, QMdiArea, QMdiSubWindow, QSizePolicy, QSplitter, QStackedWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QInputDialog, QCheckBox
 from paths import APP_DIR
 from workers.posture_worker import SideCameraWorker
@@ -104,6 +104,19 @@ READY_SEC = 2       # wait before the first dot
 DOT_SEC = 2         # seconds per dot
 AWAY_DEG = 25       # head turned more than this from the start = looking away
 CLOSED = 0.12       # eye openness below this = eyes closed
+DIM = 200            # 0 = see-through camera, 255 = black
+HEAD = (.5, .42, .22)  # head circle in the camera: center x, center y, radius (0 to 1 of the height)
+
+
+def person_path(w, h):
+    # Head + shoulders shape, in camera pixels, where the student should sit.
+    cx, cy, r = HEAD[0] * w, HEAD[1] * h, HEAD[2] * h
+    head = QPainterPath()
+    head.addEllipse(QPointF(cx, cy), r, r)
+    body = QPainterPath()
+    top = cy + r * 0.9
+    body.addRoundedRect(cx - r * 1.6, top, r * 3.2, h - top + r, r, r)
+    return head.united(body)
 
 
 class DotWindow(QWidget):
@@ -119,6 +132,9 @@ class DotWindow(QWidget):
         self.last_face = 0.0      # last time a face was seen
         self.t = 0.0              # calibration timer
         self.head0 = None         # yaw, pitch while looking at the middle dot
+        self.frame = None         # newest camera picture, drawn faintly behind the dots
+        self.in_place = False     # face inside the person shape
+        self.last_seen = 0.0      # last time any face was seen
         self._last_tick = time.time()
         self.state = (.5, .5, False, False)   # x, y, recording, test dot
         self._timer = QTimer(self)
@@ -159,11 +175,30 @@ class DotWindow(QWidget):
         # Draw the dot and the text.
         p = QPainter(self)
         p.fillRect(self.rect(), Qt.black)
+        in_place = self.in_place and time.time() - self.last_seen < 0.5
+        if self.frame is not None:
+            # camera behind a dark layer, so the student can see themselves a little
+            img = self.frame.scaled(self.size(), Qt.KeepAspectRatio)
+            fx, fy = (self.width() - img.width()) // 2, (self.height() - img.height()) // 2
+            p.drawImage(fx, fy, img)
+            # person shape from camera pixels to screen pixels
+            s = img.width() / self.frame.width()
+            person = QTransform().translate(fx, fy).scale(s, s).map(
+                person_path(self.frame.width(), self.frame.height()))
+            # dark everywhere except inside the person shape
+            outside = QPainterPath()
+            outside.addRect(QRectF(self.rect()))
+            p.fillPath(outside.subtracted(person), QColor(0, 0, 0, DIM))
+            # outline: green = in place, red = not
+            p.setPen(QPen(QColor('#22c55e') if in_place else QColor('#ef4444'), 3))
+            p.setBrush(Qt.NoBrush)
+            p.drawPath(person)
         p.setPen(Qt.white)
         p.setFont(QFont('Arial', 16))
         if time.time() - self.last_face > 0.5:
             p.setPen(Qt.red)
-            p.drawText(self.rect(), Qt.AlignHCenter | Qt.AlignTop, '\nPaused - face the screen and look at the dot')
+            msg = 'look at the dot' if in_place else 'sit inside the person shape'
+            p.drawText(self.rect(), Qt.AlignHCenter | Qt.AlignTop, f'\nPaused - {msg}')
         elif self.t < READY_SEC:
             p.drawText(self.rect(), Qt.AlignHCenter | Qt.AlignTop, '\nLook at the dot and follow it with your eyes')
         if self.state:
@@ -325,8 +360,15 @@ class CalibrationView(QWidget):
     def _collect(self, feats):
         # save the frame if the dot is recording
         r = self._reader
-        if r is None:
+        if r is None or r.frame is None:
             return
+        # whole face must be inside the person shape
+        w, h = r.frame.width(), r.frame.height()
+        shape = person_path(w, h)
+        r.in_place = all(shape.contains(QPointF(x * w, y * h)) for x, y in feats['face_pts'])
+        r.last_seen = time.time()
+        if not r.in_place:
+            return                                      # outside the shape: pause, save nothing
         if r.t < READY_SEC:
             r.head0 = (feats['yaw'], feats['pitch'])   # facing the screen at the start
         elif (r.head0 is None
@@ -402,6 +444,8 @@ class CalibrationView(QWidget):
             self._on_proceed()
 
     def _show_frame(self, qimg):
+        if self._reader is not None:
+            self._reader.frame = qimg     # faint background in the dot window
         self.video.setPixmap(QPixmap.fromImage(qimg).scaled(
             self.video.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
