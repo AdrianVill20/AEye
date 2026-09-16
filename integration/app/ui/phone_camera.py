@@ -92,6 +92,7 @@ class CameraPreview(QThread):
             if not ret:
                 self.msleep(30)
                 continue
+            frame = cv2.flip(frame, 1)
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             h, w = rgb.shape[:2]
             # .copy() detaches the QImage from the numpy buffer before it
