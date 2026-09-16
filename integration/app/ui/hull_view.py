@@ -62,7 +62,7 @@ class HullView(QWidget):
         def to_screen(q):
             # Eye values to pixels.
             x = (q[0] - x0) / (x1 - x0) * w
-            y = h - (q[1] - y0) / (y1 - y0) * h         # eyes more open = up
+            y = h - (q[1] - y0) / (y1 - y0) * h         # iris higher = up
             return QPointF(min(max(x, 8), w - 8), min(max(y, 8), h - 8))
 
         # green = screen area
@@ -90,5 +90,5 @@ class HullView(QWidget):
         p.setPen(QColor('#cbd5e1'))
         status = 'OFF SCREEN' if self.off else 'on screen'
         p.drawText(10, 20, f'Graham scan: {len(self.dots)} dots -> {len(self.scan)} corners   |   eyes: {status}')
-        p.drawText(10, h - 10, 'left  <-  eyes  ->  right          up = eyes more open (looking up)')
+        p.drawText(10, h - 10, 'left  <-  eyes  ->  right          up = iris higher (looking up)')
         p.end()

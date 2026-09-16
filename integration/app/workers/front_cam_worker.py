@@ -69,6 +69,14 @@ def _get_h_ratio(landmarks, pupil_px, corners_idx, img_w):
     return (pupil_px[0] - outer_x) / eye_width if eye_width != 0 else 0.5
 
 
+def _get_v_ratio(landmarks, iris_idx, corners_idx):
+    # Iris height above the eye corners (corners don't move with eyebrows). Bigger = looking up.
+    a, b = landmarks[corners_idx[0]], landmarks[corners_idx[1]]
+    eye_width = abs(b.x - a.x)
+    mid_y = (a.y + b.y) / 2
+    return (mid_y - landmarks[iris_idx].y) / eye_width if eye_width != 0 else 0.0
+
+
 def save_screenshot(frame, user, source):
     """Save the flagged frame as evidence. Returns the path relative to the
     app folder - that is what goes into cheating_events.screenshot_path.
@@ -86,7 +94,7 @@ class FrontCamWorker(QThread):
 
     Eye gaze:
       - Horizontal: iris center (landmark 468/473) relative to eye corners
-      - Vertical: eye openness ratio calibrated against a baseline
+      - Vertical: iris height relative to eye corners (v_openness)
     Head pose: yaw / pitch / roll from the facial transformation matrix
     """
 
@@ -103,6 +111,7 @@ class FrontCamWorker(QThread):
         self.detect = detect              # run cheat detection this session?
         self._running = False
         self._prev_h = 0.5
+        self._prev_v = None
         self._calib_openness = []
         self._baseline = None
 
@@ -111,6 +120,7 @@ class FrontCamWorker(QThread):
 
     def recalibrate(self):
         self._prev_h = 0.5
+        self._prev_v = None
         self._calib_openness = []
         self._baseline = None
 
@@ -138,6 +148,7 @@ class FrontCamWorker(QThread):
     def run(self):
         self._running = True
         self._prev_h = 0.5
+        self._prev_v = None
         self._calib_openness = []
         self._baseline = None
 
@@ -211,6 +222,10 @@ class FrontCamWorker(QThread):
 
                 h_ratio = _get_h_ratio(lm, (r_cx, r_cy), RIGHT_EYE_CORNERS, w)
                 self._prev_h = _ema(self._prev_h, h_ratio)
+
+                v_ratio = (_get_v_ratio(lm, RIGHT_IRIS_CENTER, RIGHT_EYE_CORNERS)
+                           + _get_v_ratio(lm, LEFT_IRIS_CENTER, LEFT_EYE_CORNERS)) / 2
+                self._prev_v = v_ratio if self._prev_v is None else _ema(self._prev_v, v_ratio)
 
                 if self._prev_h < H_LEFT_THRESH:
                     h_dir = "Left"
@@ -292,7 +307,8 @@ class FrontCamWorker(QThread):
                 if yaw is not None:
                     feats = {
                         'h_ratio': float(self._prev_h),
-                        'v_openness': float(avg_open),
+                        'v_openness': float(self._prev_v),   # iris height, not lid openness
+                        'openness': float(avg_open),         # lids, only for the eyes-closed check
                         'yaw': float(yaw),
                         'pitch': float(pitch),
                         'roll': float(roll),
@@ -301,7 +317,7 @@ class FrontCamWorker(QThread):
                     ready = self.detect and self._detector is not None and self._detector.ready
                     if ready:
                         # graham scan: are the eyes outside the screen area
-                        off_screen = self._detector.outside(self._prev_h, avg_open)
+                        off_screen = self._detector.outside(self._prev_h, self._prev_v)
                         # isolation forest: is this unusual for the student
                         unusual = self._detector.is_anomaly([feats[f] for f in FEATURES])
                         feats['off_screen'] = off_screen   # for the red border

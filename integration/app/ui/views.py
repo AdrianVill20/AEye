@@ -102,6 +102,8 @@ POINTS_5 = [(.5, .5), (.05, .05), (.95, .05), (.05, .95), (.95, .95)]
 VAL_POINTS = [(.3, .3), (.7, .3), (.3, .7), (.7, .7)]
 READY_SEC = 2       # wait before the first dot
 DOT_SEC = 2         # seconds per dot
+AWAY_DEG = 25       # head turned more than this from the start = looking away
+CLOSED = 0.12       # eye openness below this = eyes closed
 
 
 class DotWindow(QWidget):
@@ -116,6 +118,7 @@ class DotWindow(QWidget):
         self._on_cancel = on_cancel
         self.last_face = 0.0      # last time a face was seen
         self.t = 0.0              # calibration timer
+        self.head0 = None         # yaw, pitch while looking at the middle dot
         self._last_tick = time.time()
         self.state = (.5, .5, False, False)   # x, y, recording, test dot
         self._timer = QTimer(self)
@@ -139,8 +142,10 @@ class DotWindow(QWidget):
     def _tick(self):
         # Move the timer and the dot.
         now = time.time()
-        if now - self.last_face < 0.5:        # only count time when a face is seen
+        if now - self.last_face < 0.5:        # only count time when facing the screen
             self.t += now - self._last_tick
+        elif self.t > READY_SEC:              # paused: start this dot over
+            self.t = READY_SEC + (self.t - READY_SEC) // DOT_SEC * DOT_SEC
         self._last_tick = now
         self.state = self.dot_at(self.t)
         if self.state is None:
@@ -158,7 +163,7 @@ class DotWindow(QWidget):
         p.setFont(QFont('Arial', 16))
         if time.time() - self.last_face > 0.5:
             p.setPen(Qt.red)
-            p.drawText(self.rect(), Qt.AlignHCenter | Qt.AlignTop, '\nFace not detected - look at the camera')
+            p.drawText(self.rect(), Qt.AlignHCenter | Qt.AlignTop, '\nPaused - face the screen and look at the dot')
         elif self.t < READY_SEC:
             p.drawText(self.rect(), Qt.AlignHCenter | Qt.AlignTop, '\nLook at the dot and follow it with your eyes')
         if self.state:
@@ -319,9 +324,17 @@ class CalibrationView(QWidget):
 
     def _collect(self, feats):
         # save the frame if the dot is recording
-        if self._reader is None:
+        r = self._reader
+        if r is None:
             return
-        self._reader.last_face = time.time()
+        if r.t < READY_SEC:
+            r.head0 = (feats['yaw'], feats['pitch'])   # facing the screen at the start
+        elif (r.head0 is None
+              or abs(feats['yaw'] - r.head0[0]) > AWAY_DEG
+              or abs(feats['pitch'] - r.head0[1]) > AWAY_DEG
+              or feats['openness'] < CLOSED):
+            return                                      # looking away: pause, save nothing
+        r.last_face = time.time()
         state = self._reader.state
         if state and state[2]:
             x, y, recording, val = state
