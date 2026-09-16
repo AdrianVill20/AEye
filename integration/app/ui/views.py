@@ -265,6 +265,7 @@ class CalibrationView(QWidget):
         self._samples = []
         self._user_id = None
         self._preview = None      # live face-cam preview shown before recording
+        self._saved_runs = 0      # calibration runs saved (for the "done" message)
 
         card_l = QVBoxLayout(self)
         card_l.setContentsMargins(20, 20, 20, 20)
@@ -278,7 +279,7 @@ class CalibrationView(QWidget):
             'Pick your camera and calibration mode, then press Start Calibration. '
             'A full-screen window shows dots - look at each dot with your eyes, '
             'keeping your head natural. Esc exits. '
-            'When it closes, press Train Model, then Proceed.')
+            'When it closes, the model trains automatically - then press Proceed.')
         instructions.setWordWrap(True)
         card_l.addWidget(instructions)
 
@@ -318,10 +319,6 @@ class CalibrationView(QWidget):
         self.start_btn = QPushButton('Start Calibration')
         self.start_btn.clicked.connect(self._start)
         controls.addWidget(self.start_btn)
-        self.train_btn = QPushButton('Train Model')
-        self.train_btn.setEnabled(False)   # enabled once calibration is saved
-        self.train_btn.clicked.connect(self._train)
-        controls.addWidget(self.train_btn)
         self.proceed_btn = QPushButton('Proceed to Monitoring')
         self.proceed_btn.clicked.connect(self._proceed)
         controls.addWidget(self.proceed_btn)
@@ -399,40 +396,35 @@ class CalibrationView(QWidget):
             self.status.setText(
                 f'Only {len(self._samples)} samples captured. Keep your face in view and calibrate again.')
             return
-        runs = calibration_store.add_session(self._user_id, self._samples, screen)
-        self.status.setStyleSheet('color: #006600;')
-        self.status.setText(
-            f'Saved {len(self._samples)} samples for {self._user_id} '
-            f'({runs} calibration run(s) saved). Now press Train Model.')
-        self.train_btn.setEnabled(True)
+        self._saved_runs = calibration_store.add_session(self._user_id, self._samples, screen)
         self.cmd_label.setVisible(False)
+        # Training now runs automatically as soon as a good calibration is saved.
+        self._train()
 
     def _train(self):
         if not self._user_id:
             session = self.window().session
             self._user_id = session.user_id if session else 'test_user'
-        self.train_btn.setEnabled(False)
         self.start_btn.setEnabled(False)
-        self.status.setStyleSheet('')
-        self.status.setText(f'Training model for {self._user_id}...')
+        self.status.setStyleSheet('color: #7c5c00;')
+        self.status.setText(f'Calibration saved. Training model for {self._user_id}... please wait.')
         self._trainer = TrainWorker(self._user_id)
         self._trainer.done.connect(self._train_done)
         self._trainer.failed.connect(self._train_failed)
         self._trainer.start()
 
     def _train_done(self, result):
-        self.train_btn.setEnabled(True)
         self.start_btn.setEnabled(True)
         total = result['val_total']
         pct = 100 * result['val_inside'] / total if total else 0
-        self.status.setStyleSheet('color: #006600;')
+        runs = self._saved_runs or result['runs']
+        self.status.setStyleSheet('color: #006600; font-weight: bold;')
         self.status.setText(
-            f'Screen area built from {result["dots"]} dots ({result["corners"]} corners), head '
-            f'correction from {result["runs"]} run(s). Validation inside: {pct:.0f}%. '
-            f'Isolation forest on {result["frames"]} frames. You can now proceed.')
+            f'✓ Training done for {self._user_id}. Screen area: {result["dots"]} dots, '
+            f'{result["corners"]} corners, {runs} run(s); validation inside {pct:.0f}%. '
+            f'You can now press Proceed to Monitoring.')
 
     def _train_failed(self, msg):
-        self.train_btn.setEnabled(True)
         self.start_btn.setEnabled(True)
         self.status.setStyleSheet('color: #a00000;')
         self.status.setText(f'Training failed: {msg}')

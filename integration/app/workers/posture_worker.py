@@ -48,6 +48,14 @@ PHONE_HITS = 2
 # missed detection pass does not split one episode into many rows.
 PHONE_END_SECONDS = 2.0
 
+# --- Multiple-person block ---
+# A second person in the side camera means someone else is at the desk. When
+# YOLO sees two or more people, posture pauses and the feed shows an error; it
+# resumes on its own once only one person is left.
+PERSON_CLASS = 0     # COCO "person"
+PERSON_CONF = 0.5    # stricter than phones, so a poster / reflection isn't a 2nd person
+PEOPLE_HITS = 2      # need two passes with 2+ people before blocking (kills flicker)
+
 
 def is_visible(landmark):
     return landmark.visibility >= MIN_VISIBILITY
@@ -132,14 +140,22 @@ def draw_hands(frame, wrists, w, h):
     cv2.rectangle(frame, p1, p2, (0, 255, 0), 2)
 
 
-def detect_phones(model, frame):
-    result = model.predict(frame, classes=[PHONE_CLASS], conf=PHONE_CONF,
-                           imgsz=PHONE_SIZE, verbose=False)[0]
-    boxes = []
+def detect_objects(model, frame):
+    """One YOLO pass. Returns (people_boxes, phone_boxes) so the side camera can
+    watch for a second person and a phone at the same time. People use a stricter
+    confidence so a poster or reflection is not counted as someone."""
+    result = model.predict(frame, classes=[PERSON_CLASS, PHONE_CLASS],
+                           conf=PHONE_CONF, imgsz=PHONE_SIZE, verbose=False)[0]
+    people, phones = [], []
     for box in result.boxes:
+        cls = int(box.cls[0])
         x1, y1, x2, y2 = (int(v) for v in box.xyxy[0])
-        boxes.append((x1, y1, x2, y2, float(box.conf[0])))
-    return boxes
+        conf = float(box.conf[0])
+        if cls == PERSON_CLASS and conf >= PERSON_CONF:
+            people.append((x1, y1, x2, y2, conf))
+        elif cls == PHONE_CLASS:
+            phones.append((x1, y1, x2, y2, conf))
+    return people, phones
 
 
 def draw_phones(frame, boxes):
@@ -147,6 +163,22 @@ def draw_phones(frame, boxes):
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
         cv2.putText(frame, f'PHONE {conf:.2f}', (x1, max(y1 - 8, 14)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+
+
+def draw_people(frame, boxes):
+    # Red box around each detected person - only drawn while blocked.
+    for x1, y1, x2, y2, conf in boxes:
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+
+
+def draw_block_banner(frame, count):
+    # Big red error across the side feed while more than one person is in view.
+    h, w = frame.shape[:2]
+    cv2.rectangle(frame, (0, 0), (w - 1, h - 1), (0, 0, 255), 8)
+    cv2.putText(frame, f'{count} PEOPLE DETECTED', (20, 44),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 3)
+    cv2.putText(frame, 'Only one person allowed - posture paused', (20, 78),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
 
 class SideCameraWorker(QThread):
@@ -234,6 +266,10 @@ class SideCameraWorker(QThread):
         phone_streak = 0
         phone_active = False      # is a phone episode open right now?
         phone_last_seen = 0.0
+        people_boxes = []
+        people_count = 0
+        people_streak = 0
+        people_blocked = False    # 2+ people in view -> posture paused
 
         while self._running:
             ret, frame = cap.read()
@@ -245,10 +281,44 @@ class SideCameraWorker(QThread):
             read_fails = 0
 
             frame = cv2.flip(frame, 1)
-            # Phones are detected on this copy, so the pose overlay drawn on
-            # frame below never lands on top of the phone.
+            # People/phones are detected on this copy, so the pose overlay drawn
+            # on frame below never lands on top of them.
             clean = frame.copy()
             frame_count += 1
+
+            # YOLO people + phones (every few frames). Run before pose so a
+            # second person can pause everything below this point.
+            if frame_count % PHONE_EVERY == 0:
+                people_boxes, hits = detect_objects(phone_model, clean)
+                people_count = len(people_boxes)
+                people_streak = people_streak + 1 if people_count >= 2 else 0
+                if people_streak >= PEOPLE_HITS:
+                    people_blocked = True
+                elif people_count <= 1:
+                    people_blocked = False
+                phone_streak = phone_streak + 1 if hits else 0
+                phone_boxes = hits if phone_streak >= PHONE_HITS else []
+
+            # Two or more people: show the error, pause posture + phone logging,
+            # and keep looping so it clears itself once only one person is left.
+            if people_blocked:
+                draw_people(frame, people_boxes)
+                draw_block_banner(frame, people_count)
+                if phone_active:      # don't leave a phone episode hanging open
+                    phone_active = False
+                    self.cheat_detected.emit({'kind': 'end', 'source': 'phone',
+                                              'ended_at': datetime.now()})
+                display_stats = self._blank_stats()
+                signal = 'LOST'
+                stats = self._blank_stats()
+                stats['Signal'] = f'BLOCKED - {people_count} people in view'
+                rgb_out = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                bh, bw = frame.shape[:2]
+                qimg = QImage(rgb_out.data, bw, bh, 3 * bw, QImage.Format_RGB888).copy()
+                self.frame_ready.emit(qimg)
+                self.stats_ready.emit(stats)
+                continue
+
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
             result = landmarker.detect_for_video(mp_image, timestamp_ms)
@@ -285,10 +355,6 @@ class SideCameraWorker(QThread):
                     stats['Landmarks detected (/33)'] = str(count_visible(pose_lm))
                     break
 
-            if frame_count % PHONE_EVERY == 0:
-                hits = detect_phones(phone_model, clean)
-                phone_streak = phone_streak + 1 if hits else 0
-                phone_boxes = hits if phone_streak >= PHONE_HITS else []
             draw_phones(frame, phone_boxes)
 
             # Phone flag: one start event when a phone shows up, one end event
