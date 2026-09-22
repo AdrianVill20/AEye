@@ -107,6 +107,23 @@ CLOSED = 0.12       # eye openness below this = eyes closed
 DIM = 200            # 0 = see-through camera, 255 = black
 HEAD = (.5, .42, .22)  # head circle in the camera: center x, center y, radius (0 to 1 of the height)
 
+# --- Live gaze marker + hit-the-dot advance --------------------------------
+# A calibration-FREE rough gaze estimate: guess a screen point from head pose
+# (yaw/pitch) + iris position (h_ratio/v_openness) with fixed gains and a 1 s
+# auto-baseline (look at the centre). Inaccurate by design - there is no
+# per-student calibration yet - so the student moves the marker onto each dot to
+# advance and can tune sensitivity live. Samples record while the marker is on
+# the dot, so they are captured when the student is actually looking at it.
+# Tuned on the webcam via gaze_marker_test.py.
+BASELINE_SEC = 1.0     # auto-baseline window at start (look at the centre)
+GAZE_EMA = 0.25        # marker smoothing (lower = smoother/laggier)
+W_EYE = 150.0          # eye vs head blend (h_ratio swing ~0.08 -> ~12 "deg" units)
+SENS_X = 0.025         # horizontal sensitivity (units-to-half-screen)
+SENS_Y = 0.030         # vertical sensitivity
+HIT_R = 0.12           # how close (fraction of screen) counts as on the dot
+REC_FRAMES = 15        # on-dot samples to record per dot (>=10 for training)
+DEBUG_GATE = True      # temporary on-screen readout (for tuning)
+
 
 def person_path(w, h):
     # Head + shoulders shape, in camera pixels, where the student should sit.
@@ -120,7 +137,14 @@ def person_path(w, h):
 
 
 class DotWindow(QWidget):
-    # Full screen dots for calibration.
+    """Full screen dots for calibration.
+
+    A calibration-free live gaze MARKER (rough, uncalibrated) is shown; the
+    student moves it onto each dot to advance. While the marker sits on a dot,
+    REC_FRAMES samples are recorded (target = that dot), so recording captures
+    frames where the student is actually looking at it. Sensitivity is
+    adjustable live; there is a 1 s auto-baseline at the start.
+    """
 
     def __init__(self, mode, on_done, on_cancel):
         super().__init__()
@@ -129,57 +153,98 @@ class DotWindow(QWidget):
         self.mode = mode
         self._on_done = on_done
         self._on_cancel = on_cancel
-        self.last_face = 0.0      # last time a face was seen
-        self.t = 0.0              # calibration timer
-        self.head0 = None         # yaw, pitch while looking at the middle dot
+        points = POINTS_5 if mode == '5 point' else POINTS_9
+        # (x, y, val): the calibration dots, then the validation dots.
+        self.steps = [(x, y, False) for x, y in points] + [(x, y, True) for x, y in VAL_POINTS]
+        self.i = 0
+        self.phase = 'baseline'   # baseline -> hit -> done
+        self.rec_count = 0
         self.frame = None         # newest camera picture, drawn faintly behind the dots
         self.in_place = False     # face inside the person shape
         self.last_seen = 0.0      # last time any face was seen
-        self._last_tick = time.time()
-        self.state = (.5, .5, False, False)   # x, y, recording, test dot
+        self.last_face = 0.0      # last usable frame
+        self.state = (.5, .5, False, False)   # x, y, recording, val (read by _collect)
+        # live gaze marker (calibration-free, rough)
+        self.sens_x = SENS_X
+        self.sens_y = SENS_Y
+        self.ref = None           # baseline (yaw0, pitch0, h0, v0)
+        self._base = []           # frames gathered for the baseline
+        self._base_until = None   # baseline window end (set on the first frame)
+        self.gaze = None          # smoothed marker (x, y) in 0..1
+        self.on_dot = False       # marker currently on the target
         self._timer = QTimer(self)
-        self._timer.timeout.connect(self._tick)
+        self._timer.timeout.connect(self.update)   # repaint; advance logic is in _collect
         self._timer.start(16)     # 60 fps
 
-    def dot_at(self, t):
-        # Where the dot is at this time.
-        if t < READY_SEC:
-            return (.5, .5, False, False)
-        t -= READY_SEC
-        points = POINTS_5 if self.mode == '5 point' else POINTS_9
-        # dots, then test dots
-        steps = [(x, y, False) for x, y in points] + [(x, y, True) for x, y in VAL_POINTS]
-        i = int(t // DOT_SEC)
-        if i >= len(steps):
-            return None
-        x, y, val = steps[i]
-        return (x, y, t % DOT_SEC > 1.0, val)   # record after 1 second
+    def _finish_all(self):
+        self._timer.stop()
+        self.phase = 'done'
+        self._on_cancel = None
+        QTimer.singleShot(0, self._on_done)   # run after this frame's slot returns
 
-    def _tick(self):
-        # Move the timer and the dot.
-        now = time.time()
-        if now - self.last_face < 0.5:        # only count time when facing the screen
-            self.t += now - self._last_tick
-        elif self.t > READY_SEC:              # paused: start this dot over
-            self.t = READY_SEC + (self.t - READY_SEC) // DOT_SEC * DOT_SEC
-        self._last_tick = now
-        self.state = self.dot_at(self.t)
-        if self.state is None:
-            self._timer.stop()
-            self._on_cancel = None
-            self._on_done()
+    def update_gaze(self, feats):
+        # Called from CalibrationView._collect for every in-place frame. During
+        # 'baseline' it gathers the neutral pose; during 'hit' it updates the
+        # rough gaze marker and whether it is currently on the target dot.
+        if self.phase == 'baseline':
+            if self._base_until is None:              # start the window on frame 1
+                self._base_until = time.time() + BASELINE_SEC
+            self._base.append((feats['yaw'], feats['pitch'],
+                               feats['h_ratio'], feats['v_openness']))
+            if time.time() >= self._base_until:
+                n = len(self._base)
+                self.ref = tuple(sum(v[k] for v in self._base) / n for k in range(4))
+                self.phase = 'hit'                    # keep i / rec_count as-is
             return
-        self.update()
+        if self.phase != 'hit':
+            return
+        yaw0, pitch0, h0, v0 = self.ref
+        raw_x = (feats['yaw'] - yaw0) + W_EYE * (feats['h_ratio'] - h0)
+        # looking down: pitch up, iris (v_openness) down -> both push the dot down
+        raw_y = (feats['pitch'] - pitch0) - W_EYE * (feats['v_openness'] - v0)
+        x = min(1.0, max(0.0, 0.5 + self.sens_x * raw_x))
+        y = min(1.0, max(0.0, 0.5 + self.sens_y * raw_y))
+        if self.gaze is None:
+            self.gaze = (x, y)
+        else:
+            gx, gy = self.gaze
+            self.gaze = (gx * (1 - GAZE_EMA) + x * GAZE_EMA,
+                         gy * (1 - GAZE_EMA) + y * GAZE_EMA)
+        tx, ty, val = self.steps[self.i]
+        dist = ((self.gaze[0] - tx) ** 2 + (self.gaze[1] - ty) ** 2) ** 0.5
+        self.on_dot = dist < HIT_R and feats['openness'] >= CLOSED
+        self.state = (tx, ty, self.on_dot, val)   # recording flag = on the dot
+
+    def note_record(self):
+        # Called from _collect after an on-dot sample is stored for this dot.
+        if self.phase != 'hit':
+            return
+        self.rec_count += 1
+        if self.rec_count >= REC_FRAMES:
+            self.i += 1
+            self.rec_count = 0
+            if self.i >= len(self.steps):
+                self._finish_all()
+
+    def _rebaseline(self):
+        # Re-centre without losing progress (keeps the current dot).
+        self.phase = 'baseline'
+        self.ref = None
+        self._base = []
+        self._base_until = None
+        self.gaze = None
+        self.on_dot = False
 
     def paintEvent(self, event):
-        # Draw the dot and the text.
+        # Draw the dot, hit zone, record ring, gaze marker and text.
         p = QPainter(self)
         p.fillRect(self.rect(), Qt.black)
+        W, H = self.width(), self.height()
         in_place = self.in_place and time.time() - self.last_seen < 0.5
         if self.frame is not None:
             # camera behind a dark layer, so the student can see themselves a little
             img = self.frame.scaled(self.size(), Qt.KeepAspectRatio)
-            fx, fy = (self.width() - img.width()) // 2, (self.height() - img.height()) // 2
+            fx, fy = (W - img.width()) // 2, (H - img.height()) // 2
             p.drawImage(fx, fy, img)
             # person shape from camera pixels to screen pixels
             s = img.width() / self.frame.width()
@@ -195,27 +260,76 @@ class DotWindow(QWidget):
             p.drawPath(person)
         p.setPen(Qt.white)
         p.setFont(QFont('Arial', 16))
-        if time.time() - self.last_face > 0.5:
+        if not in_place:
             p.setPen(Qt.red)
-            msg = 'look at the dot' if in_place else 'sit inside the person shape'
-            p.drawText(self.rect(), Qt.AlignHCenter | Qt.AlignTop, f'\nPaused - {msg}')
-        elif self.t < READY_SEC:
-            p.drawText(self.rect(), Qt.AlignHCenter | Qt.AlignTop, '\nLook at the dot and follow it with your eyes')
-        if self.state:
-            x, y, recording, val = self.state
-            cx, cy = int(x * self.width()), int(y * self.height())
+            p.drawText(self.rect(), Qt.AlignHCenter | Qt.AlignTop,
+                       '\nPaused - sit inside the person shape')
+        elif self.phase == 'baseline':
+            p.setPen(QColor('#fbbf24'))
+            p.drawText(self.rect(), Qt.AlignHCenter | Qt.AlignTop,
+                       '\nLook at the centre for a moment...')
+        else:
+            p.drawText(self.rect(), Qt.AlignHCenter | Qt.AlignTop,
+                       '\nMove the marker onto the dot and hold')
+        if self.phase == 'hit':
+            tx, ty, _ = self.steps[self.i]
+            cx, cy = int(tx * W), int(ty * H)
+            # target dot (green while the marker is on it)
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor('#22c55e') if recording else QColor('#ffffff'))
-            p.drawEllipse(QPointF(cx, cy), 18, 18)
+            p.setBrush(QColor('#22c55e') if self.on_dot else QColor('#ffffff'))
+            p.drawEllipse(QPointF(cx, cy), 16, 16)
+            # generous hit zone
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(QColor('#334155'), 2))
+            r = HIT_R * min(W, H)
+            p.drawEllipse(QPointF(cx, cy), r, r)
+            # record ring fills as on-dot samples are captured
+            p.setPen(QPen(QColor('#94a3b8'), 4))
+            p.drawEllipse(QPointF(cx, cy), 30, 30)
+            if self.rec_count:
+                p.setPen(QPen(QColor('#22c55e'), 6))
+                span = int(360 * self.rec_count / REC_FRAMES)
+                p.drawArc(QRectF(cx - 30, cy - 30, 60, 60), 90 * 16, -span * 16)
+            # the rough gaze marker
+            if self.gaze is not None:
+                gx, gy = self.gaze[0] * W, self.gaze[1] * H
+                p.setBrush(QColor(34, 197, 94, 90))
+                p.setPen(QPen(QColor('#22c55e'), 3))
+                p.drawEllipse(QPointF(gx, gy), 22, 22)
+                p.setPen(QPen(QColor('#22c55e'), 2))
+                p.drawLine(int(gx - 30), int(gy), int(gx + 30), int(gy))
+                p.drawLine(int(gx), int(gy - 30), int(gx), int(gy + 30))
+        # dot counter (bottom-right)
+        p.setPen(QColor('#cbd5e1'))
+        p.setFont(QFont('Arial', 12))
+        p.drawText(self.rect().adjusted(0, 0, -12, -8), Qt.AlignRight | Qt.AlignBottom,
+                   f'dot {min(self.i + 1, len(self.steps))}/{len(self.steps)}')
+        # temporary tuning readout (bottom-left)
+        if DEBUG_GATE:
+            p.setPen(QColor('#e2e8f0'))
+            p.setFont(QFont('Consolas', 12))
+            p.drawText(12, self.height() - 16,
+                       f'[{self.phase}] sens_x={self.sens_x:.4f} sens_y={self.sens_y:.4f} '
+                       f'rec={self.rec_count}/{REC_FRAMES}  (arrows tune, B re-baseline)')
         p.end()
 
     def keyPressEvent(self, event):
-        # esc to exit
-        if event.key() == Qt.Key_Escape:
+        k = event.key()
+        if k == Qt.Key_Escape:
             answer = QMessageBox.question(self, 'Exit calibration?',
                                           'Nothing will be saved. Exit anyway?')
             if answer == QMessageBox.Yes:
                 self.close()
+        elif k == Qt.Key_B:
+            self._rebaseline()
+        elif k == Qt.Key_Right:
+            self.sens_x += 0.002
+        elif k == Qt.Key_Left:
+            self.sens_x = max(0.0, self.sens_x - 0.002)
+        elif k == Qt.Key_Up:
+            self.sens_y += 0.002
+        elif k == Qt.Key_Down:
+            self.sens_y = max(0.0, self.sens_y - 0.002)
 
     def closeEvent(self, event):
         self._timer.stop()
@@ -277,9 +391,10 @@ class CalibrationView(QWidget):
 
         instructions = QLabel(
             'Pick your camera and calibration mode, then press Start Calibration. '
-            'A full-screen window shows dots - look at each dot with your eyes, '
-            'keeping your head natural. Esc exits. '
-            'When it closes, the model trains automatically - then press Proceed.')
+            'Look at the centre for a moment (auto-baseline), then a rough gaze '
+            'marker appears. Move it onto each dot and hold until the ring fills, '
+            'and it advances. Arrow keys tune sensitivity, B re-baselines, Esc '
+            'exits. When it closes, the model trains automatically - then Proceed.')
         instructions.setWordWrap(True)
         card_l.addWidget(instructions)
 
@@ -355,7 +470,7 @@ class CalibrationView(QWidget):
         self._reader.showFullScreen()
 
     def _collect(self, feats):
-        # save the frame if the dot is recording
+        # Update the dot window's gaze marker and record while it is on the dot.
         r = self._reader
         if r is None or r.frame is None:
             return
@@ -366,21 +481,16 @@ class CalibrationView(QWidget):
         r.last_seen = time.time()
         if not r.in_place:
             return                                      # outside the shape: pause, save nothing
-        if r.t < READY_SEC:
-            r.head0 = (feats['yaw'], feats['pitch'])   # facing the screen at the start
-        elif (r.head0 is None
-              or abs(feats['yaw'] - r.head0[0]) > AWAY_DEG
-              or abs(feats['pitch'] - r.head0[1]) > AWAY_DEG
-              or feats['openness'] < CLOSED):
-            return                                      # looking away: pause, save nothing
         r.last_face = time.time()
-        state = self._reader.state
-        if state and state[2]:
-            x, y, recording, val = state
+        r.update_gaze(feats)                            # baseline, or move the marker
+        # When the marker is on the dot, r.state[2] is True: record and count.
+        if r.phase == 'hit' and r.state and r.state[2]:
+            x, y, recording, val = r.state
             sample = dict(feats)
             sample['target'] = [x, y]
-            sample['val'] = val           # test dot
+            sample['val'] = val               # test dot
             self._samples.append(sample)
+            r.note_record()
 
     def _finish(self):
         screen = [self._reader.width(), self._reader.height()]
