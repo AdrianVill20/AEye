@@ -1,4 +1,7 @@
+import random
 import time
+from collections import deque
+from statistics import mean, pstdev
 from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, QPointF, QRectF
 from PySide6.QtGui import QPixmap, QPainter, QPainterPath, QTransform, QColor, QFont, QPen
@@ -107,22 +110,32 @@ CLOSED = 0.12       # eye openness below this = eyes closed
 DIM = 200            # 0 = see-through camera, 255 = black
 HEAD = (.5, .42, .22)  # head circle in the camera: center x, center y, radius (0 to 1 of the height)
 
-# --- Live gaze marker + hit-the-dot advance --------------------------------
-# A calibration-FREE rough gaze estimate: guess a screen point from head pose
-# (yaw/pitch) + iris position (h_ratio/v_openness) with fixed gains and a 1 s
-# auto-baseline (look at the centre). Inaccurate by design - there is no
-# per-student calibration yet - so the student moves the marker onto each dot to
-# advance and can tune sensitivity live. Samples record while the marker is on
-# the dot, so they are captured when the student is actually looking at it.
-# Tuned on the webcam via gaze_marker_test.py.
-BASELINE_SEC = 1.0     # auto-baseline window at start (look at the centre)
-GAZE_EMA = 0.25        # marker smoothing (lower = smoother/laggier)
-W_EYE = 150.0          # eye vs head blend (h_ratio swing ~0.08 -> ~12 "deg" units)
-SENS_X = 0.025         # horizontal sensitivity (units-to-half-screen)
-SENS_Y = 0.030         # vertical sensitivity
-HIT_R = 0.12           # how close (fraction of screen) counts as on the dot
-REC_FRAMES = 15        # on-dot samples to record per dot (>=10 for training)
-DEBUG_GATE = True      # temporary on-screen readout (for tuning)
+# --- WebGazer-style click calibration --------------------------------------
+# One dot HOPS around the screen; the student follows it and clicks it. People
+# look where they click, so each click is proof of attention, and because the dot
+# keeps jumping they must actually follow it. The dot only visits the fixed
+# targets (so training still gets enough frames per target), each VISITS_PER_DOT
+# times in a shuffled order (no two the same in a row) so it can't be clicked
+# from memory. We record only the frames around each click, then verify the eye
+# features moved with the dots before saving. Tune these on real students.
+VISITS_PER_DOT = 3     # times each target appears in the hop path (>=10 frames/target)
+CLICK_WINDOW = 0.4     # seconds of frames kept around each click and recorded
+MAX_SPREAD = 0.05      # max std of h_ratio / v_openness across one target's clicks
+MIN_GAP = 0.015        # min mean gap between left/right (and top/bottom) dots
+
+
+def hop_path(targets):
+    # Each target VISITS_PER_DOT times, shuffled, never the same target twice in a
+    # row - so every hop is a real move the student has to follow.
+    path = list(targets) * VISITS_PER_DOT
+    random.shuffle(path)
+    for i in range(1, len(path)):
+        if path[i] == path[i - 1]:
+            for j in range(i + 1, len(path)):
+                if path[j] != path[i - 1]:
+                    path[i], path[j] = path[j], path[i]
+                    break
+    return path
 
 
 def person_path(w, h):
@@ -139,42 +152,51 @@ def person_path(w, h):
 class DotWindow(QWidget):
     """Full screen dots for calibration.
 
-    A calibration-free live gaze MARKER (rough, uncalibrated) is shown; the
-    student moves it onto each dot to advance. While the marker sits on a dot,
-    REC_FRAMES samples are recorded (target = that dot), so recording captures
-    frames where the student is actually looking at it. Sensitivity is
-    adjustable live; there is a 1 s auto-baseline at the start.
+    WebGazer-style: one dot HOPS around the screen and the student follows it and
+    clicks it (people look where they click, so a click is proof of attention).
+    Each click makes the dot jump to the next spot in the hop path. After the hop
+    path, the VAL_POINTS are shown timed (no clicking) as the accuracy step. The
+    mouse cursor stays visible; CalibrationView checks and records each click via
+    on_click, and records the timed val frames in _collect.
     """
 
-    def __init__(self, mode, on_done, on_cancel):
+    def __init__(self, mode, on_done, on_cancel, on_click):
         super().__init__()
         self.setWindowTitle('AEye Calibration')
         self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
-        self.mode = mode
         self._on_done = on_done
         self._on_cancel = on_cancel
-        points = POINTS_5 if mode == '5 point' else POINTS_9
-        # (x, y, val): the calibration dots, then the validation dots.
-        self.steps = [(x, y, False) for x, y in points] + [(x, y, True) for x, y in VAL_POINTS]
-        self.i = 0
-        self.phase = 'baseline'   # baseline -> hit -> done
-        self.rec_count = 0
-        self.frame = None         # newest camera picture, drawn faintly behind the dots
-        self.in_place = False     # face inside the person shape
-        self.last_seen = 0.0      # last time any face was seen
-        self.last_face = 0.0      # last usable frame
-        self.state = (.5, .5, False, False)   # x, y, recording, val (read by _collect)
-        # live gaze marker (calibration-free, rough)
-        self.sens_x = SENS_X
-        self.sens_y = SENS_Y
-        self.ref = None           # baseline (yaw0, pitch0, h0, v0)
-        self._base = []           # frames gathered for the baseline
-        self._base_until = None   # baseline window end (set on the first frame)
-        self.gaze = None          # smoothed marker (x, y) in 0..1
-        self.on_dot = False       # marker currently on the target
+        self._on_click = on_click            # CalibrationView: checks + records a click
+        targets = POINTS_5 if mode == '5 point' else POINTS_9
+        self.path = hop_path(targets)         # shuffled hops among the targets
+        self.val_points = VAL_POINTS
+        self.step = 0                         # current hop
+        self.phase = 'click'                  # click -> val -> done
+        self.val_i = 0                        # current val dot
+        self.val_elapsed = 0.0                # seconds on the current val dot (while facing)
+        self.msg = ''                         # red reason text after a rejected click
+        self.frame = None                     # newest camera picture, drawn faintly behind
+        self.in_place = False                 # face inside the person shape
+        self.last_seen = 0.0                  # last time any face was seen
+        self.last_face = 0.0                  # last usable frame
+        self._last_tick = time.time()
         self._timer = QTimer(self)
-        self._timer.timeout.connect(self.update)   # repaint; advance logic is in _collect
-        self._timer.start(16)     # 60 fps
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(16)                 # 60 fps
+
+    # --- val phase (timed staring, no clicking) ---------------------------
+    def val_point(self):
+        return self.val_points[self.val_i]
+
+    def val_recording(self):
+        # record only the settled second of each val dot
+        return self.phase == 'val' and self.val_elapsed > 1.0
+
+    def _start_val(self):
+        self.phase = 'val'
+        self.val_i = 0
+        self.val_elapsed = 0.0
+        self._last_tick = time.time()
 
     def _finish_all(self):
         self._timer.stop()
@@ -182,61 +204,38 @@ class DotWindow(QWidget):
         self._on_cancel = None
         QTimer.singleShot(0, self._on_done)   # run after this frame's slot returns
 
-    def update_gaze(self, feats):
-        # Called from CalibrationView._collect for every in-place frame. During
-        # 'baseline' it gathers the neutral pose; during 'hit' it updates the
-        # rough gaze marker and whether it is currently on the target dot.
-        if self.phase == 'baseline':
-            if self._base_until is None:              # start the window on frame 1
-                self._base_until = time.time() + BASELINE_SEC
-            self._base.append((feats['yaw'], feats['pitch'],
-                               feats['h_ratio'], feats['v_openness']))
-            if time.time() >= self._base_until:
-                n = len(self._base)
-                self.ref = tuple(sum(v[k] for v in self._base) / n for k in range(4))
-                self.phase = 'hit'                    # keep i / rec_count as-is
+    def _tick(self):
+        now = time.time()
+        if self.phase == 'val':
+            if now - self.last_face < 0.5:            # only count time while facing
+                self.val_elapsed += now - self._last_tick
+            if self.val_elapsed >= DOT_SEC:
+                self.val_i += 1
+                self.val_elapsed = 0.0
+                if self.val_i >= len(self.val_points):
+                    self._finish_all()
+                    return
+        self._last_tick = now
+        self.update()
+
+    def mousePressEvent(self, event):
+        if self.phase != 'click':
             return
-        if self.phase != 'hit':
-            return
-        yaw0, pitch0, h0, v0 = self.ref
-        raw_x = (feats['yaw'] - yaw0) + W_EYE * (feats['h_ratio'] - h0)
-        # looking down: pitch up, iris (v_openness) down -> both push the dot down
-        raw_y = (feats['pitch'] - pitch0) - W_EYE * (feats['v_openness'] - v0)
-        x = min(1.0, max(0.0, 0.5 + self.sens_x * raw_x))
-        y = min(1.0, max(0.0, 0.5 + self.sens_y * raw_y))
-        if self.gaze is None:
-            self.gaze = (x, y)
+        tx, ty = self.path[self.step]
+        cx, cy = tx * self.width(), ty * self.height()
+        if ((event.position().x() - cx) ** 2 + (event.position().y() - cy) ** 2) ** 0.5 > 26:
+            return                                    # only clicks on the dot count
+        reason = self._on_click(self.path[self.step])  # checks + records the window
+        if reason:
+            self.msg = reason                          # bad click: show why, no hop
         else:
-            gx, gy = self.gaze
-            self.gaze = (gx * (1 - GAZE_EMA) + x * GAZE_EMA,
-                         gy * (1 - GAZE_EMA) + y * GAZE_EMA)
-        tx, ty, val = self.steps[self.i]
-        dist = ((self.gaze[0] - tx) ** 2 + (self.gaze[1] - ty) ** 2) ** 0.5
-        self.on_dot = dist < HIT_R and feats['openness'] >= CLOSED
-        self.state = (tx, ty, self.on_dot, val)   # recording flag = on the dot
-
-    def note_record(self):
-        # Called from _collect after an on-dot sample is stored for this dot.
-        if self.phase != 'hit':
-            return
-        self.rec_count += 1
-        if self.rec_count >= REC_FRAMES:
-            self.i += 1
-            self.rec_count = 0
-            if self.i >= len(self.steps):
-                self._finish_all()
-
-    def _rebaseline(self):
-        # Re-centre without losing progress (keeps the current dot).
-        self.phase = 'baseline'
-        self.ref = None
-        self._base = []
-        self._base_until = None
-        self.gaze = None
-        self.on_dot = False
+            self.msg = ''
+            self.step += 1                             # good click -> hop to the next spot
+            if self.step >= len(self.path):
+                self._start_val()
+        self.update()
 
     def paintEvent(self, event):
-        # Draw the dot, hit zone, record ring, gaze marker and text.
         p = QPainter(self)
         p.fillRect(self.rect(), Qt.black)
         W, H = self.width(), self.height()
@@ -250,86 +249,55 @@ class DotWindow(QWidget):
             s = img.width() / self.frame.width()
             person = QTransform().translate(fx, fy).scale(s, s).map(
                 person_path(self.frame.width(), self.frame.height()))
-            # dark everywhere except inside the person shape
             outside = QPainterPath()
             outside.addRect(QRectF(self.rect()))
             p.fillPath(outside.subtracted(person), QColor(0, 0, 0, DIM))
-            # outline: green = in place, red = not
             p.setPen(QPen(QColor('#22c55e') if in_place else QColor('#ef4444'), 3))
             p.setBrush(Qt.NoBrush)
             p.drawPath(person)
-        p.setPen(Qt.white)
         p.setFont(QFont('Arial', 16))
         if not in_place:
             p.setPen(Qt.red)
             p.drawText(self.rect(), Qt.AlignHCenter | Qt.AlignTop,
                        '\nPaused - sit inside the person shape')
-        elif self.phase == 'baseline':
-            p.setPen(QColor('#fbbf24'))
+        elif self.msg:
+            p.setPen(Qt.red)
+            p.drawText(self.rect(), Qt.AlignHCenter | Qt.AlignTop, '\n' + self.msg)
+        elif self.phase == 'click':
+            p.setPen(Qt.white)
             p.drawText(self.rect(), Qt.AlignHCenter | Qt.AlignTop,
-                       '\nLook at the centre for a moment...')
+                       '\nFollow the dot and click it')
         else:
+            p.setPen(Qt.white)
             p.drawText(self.rect(), Qt.AlignHCenter | Qt.AlignTop,
-                       '\nMove the marker onto the dot and hold')
-        if self.phase == 'hit':
-            tx, ty, _ = self.steps[self.i]
-            cx, cy = int(tx * W), int(ty * H)
-            # target dot (green while the marker is on it)
+                       '\nNow just look at each dot (no clicking)')
+        # the dot
+        if self.phase == 'click':
+            tx, ty = self.path[self.step]
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor('#22c55e') if self.on_dot else QColor('#ffffff'))
-            p.drawEllipse(QPointF(cx, cy), 16, 16)
-            # generous hit zone
-            p.setBrush(Qt.NoBrush)
-            p.setPen(QPen(QColor('#334155'), 2))
-            r = HIT_R * min(W, H)
-            p.drawEllipse(QPointF(cx, cy), r, r)
-            # record ring fills as on-dot samples are captured
-            p.setPen(QPen(QColor('#94a3b8'), 4))
-            p.drawEllipse(QPointF(cx, cy), 30, 30)
-            if self.rec_count:
-                p.setPen(QPen(QColor('#22c55e'), 6))
-                span = int(360 * self.rec_count / REC_FRAMES)
-                p.drawArc(QRectF(cx - 30, cy - 30, 60, 60), 90 * 16, -span * 16)
-            # the rough gaze marker
-            if self.gaze is not None:
-                gx, gy = self.gaze[0] * W, self.gaze[1] * H
-                p.setBrush(QColor(34, 197, 94, 90))
-                p.setPen(QPen(QColor('#22c55e'), 3))
-                p.drawEllipse(QPointF(gx, gy), 22, 22)
-                p.setPen(QPen(QColor('#22c55e'), 2))
-                p.drawLine(int(gx - 30), int(gy), int(gx + 30), int(gy))
-                p.drawLine(int(gx), int(gy - 30), int(gx), int(gy + 30))
+            p.setBrush(QColor('#ffffff'))
+            p.drawEllipse(QPointF(int(tx * W), int(ty * H)), 18, 18)
+        elif self.phase == 'val':
+            tx, ty = self.val_point()
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor('#22c55e') if self.val_recording() else QColor('#ffffff'))
+            p.drawEllipse(QPointF(int(tx * W), int(ty * H)), 18, 18)
         # dot counter (bottom-right)
+        total = len(self.path) + len(self.val_points)
+        done = self.step if self.phase == 'click' else len(self.path) + self.val_i
         p.setPen(QColor('#cbd5e1'))
         p.setFont(QFont('Arial', 12))
         p.drawText(self.rect().adjusted(0, 0, -12, -8), Qt.AlignRight | Qt.AlignBottom,
-                   f'dot {min(self.i + 1, len(self.steps))}/{len(self.steps)}')
-        # temporary tuning readout (bottom-left)
-        if DEBUG_GATE:
-            p.setPen(QColor('#e2e8f0'))
-            p.setFont(QFont('Consolas', 12))
-            p.drawText(12, self.height() - 16,
-                       f'[{self.phase}] sens_x={self.sens_x:.4f} sens_y={self.sens_y:.4f} '
-                       f'rec={self.rec_count}/{REC_FRAMES}  (arrows tune, B re-baseline)')
+                   f'dot {min(done + 1, total)}/{total}')
         p.end()
 
     def keyPressEvent(self, event):
-        k = event.key()
-        if k == Qt.Key_Escape:
+        # esc to exit
+        if event.key() == Qt.Key_Escape:
             answer = QMessageBox.question(self, 'Exit calibration?',
                                           'Nothing will be saved. Exit anyway?')
             if answer == QMessageBox.Yes:
                 self.close()
-        elif k == Qt.Key_B:
-            self._rebaseline()
-        elif k == Qt.Key_Right:
-            self.sens_x += 0.002
-        elif k == Qt.Key_Left:
-            self.sens_x = max(0.0, self.sens_x - 0.002)
-        elif k == Qt.Key_Up:
-            self.sens_y += 0.002
-        elif k == Qt.Key_Down:
-            self.sens_y = max(0.0, self.sens_y - 0.002)
 
     def closeEvent(self, event):
         self._timer.stop()
@@ -377,6 +345,9 @@ class CalibrationView(QWidget):
         self._trainer = None
         self._reader = None       # the dot window
         self._samples = []
+        self._buf = deque(maxlen=40)   # recent (time, feats) for click-window sampling
+        self._head0 = None        # neutral head pose, set on the first in-place frame
+        self._latest = None       # newest feats, for the click-time checks
         self._user_id = None
         self._preview = None      # live face-cam preview shown before recording
         self._saved_runs = 0      # calibration runs saved (for the "done" message)
@@ -391,10 +362,11 @@ class CalibrationView(QWidget):
 
         instructions = QLabel(
             'Pick your camera and calibration mode, then press Start Calibration. '
-            'Look at the centre for a moment (auto-baseline), then a rough gaze '
-            'marker appears. Move it onto each dot and hold until the ring fills, '
-            'and it advances. Arrow keys tune sensitivity, B re-baselines, Esc '
-            'exits. When it closes, the model trains automatically - then Proceed.')
+            'A full-screen window shows one dot that HOPS around - look straight at '
+            'it and CLICK it each time it moves, following it around the screen. '
+            'After that, just look at a few dots without clicking. Esc exits. If '
+            'your gaze did not follow the dots the run is rejected; otherwise the '
+            'model trains automatically - then press Proceed.')
         instructions.setWordWrap(True)
         card_l.addWidget(instructions)
 
@@ -451,6 +423,9 @@ class CalibrationView(QWidget):
         session = self.window().session
         self._user_id = session.user_id if session else 'test_user'
         self._samples = []
+        self._buf = deque(maxlen=40)
+        self._head0 = None
+        self._latest = None
         self._stop_preview()   # hand the camera to the recorder
         # detect=False -> record only. We collect the raw features via
         # features_ready and save them to JSON; nothing is written to MySQL.
@@ -466,11 +441,13 @@ class CalibrationView(QWidget):
         self.status.setStyleSheet('')
         self.status.setText('Calibrating... (dot window is open)')
         self._reader = DotWindow(self.mode_box.currentText(),
-                                 on_done=self._finish, on_cancel=self._cancel_reading)
+                                 on_done=self._finish, on_cancel=self._cancel_reading,
+                                 on_click=self._click)
         self._reader.showFullScreen()
 
     def _collect(self, feats):
-        # Update the dot window's gaze marker and record while it is on the dot.
+        # Buffer recent frames; a valid click copies a short window of them. In
+        # the val phase, record the timed staring frames (val = True).
         r = self._reader
         if r is None or r.frame is None:
             return
@@ -481,16 +458,51 @@ class CalibrationView(QWidget):
         r.last_seen = time.time()
         if not r.in_place:
             return                                      # outside the shape: pause, save nothing
+        if self._head0 is None:
+            self._head0 = (feats['yaw'], feats['pitch'])   # neutral, facing the screen
         r.last_face = time.time()
-        r.update_gaze(feats)                            # baseline, or move the marker
-        # When the marker is on the dot, r.state[2] is True: record and count.
-        if r.phase == 'hit' and r.state and r.state[2]:
-            x, y, recording, val = r.state
-            sample = dict(feats)
-            sample['target'] = [x, y]
-            sample['val'] = val               # test dot
-            self._samples.append(sample)
-            r.note_record()
+        self._latest = feats
+        self._buf.append((time.time(), feats))
+        # val phase: record the timed staring frames as test dots
+        if r.val_recording() and self._gates(feats) is None:
+            self._samples.append(self._sample(feats, r.val_point(), True))
+
+    def _gates(self, feats):
+        # Shared face/head/eye checks. None = ok, else a short red reason.
+        if self._head0 is None:
+            return 'sit inside the person shape'
+        if (abs(feats['yaw'] - self._head0[0]) > AWAY_DEG
+                or abs(feats['pitch'] - self._head0[1]) > AWAY_DEG):
+            return 'keep your head facing the screen'
+        if feats['openness'] < CLOSED:
+            return 'keep your eyes open'
+        return None
+
+    def _sample(self, feats, dot, val):
+        # Same JSON shape as before (extra feats keys are ignored by training).
+        s = dict(feats)
+        s['target'] = [dot[0], dot[1]]
+        s['val'] = val
+        return s
+
+    def _click(self, dot):
+        # Called by DotWindow on a click that landed on the dot. Returns None if
+        # accepted (and records the last CLICK_WINDOW seconds of frames), else a
+        # short reason to show in red.
+        r = self._reader
+        if r is None or not r.in_place or time.time() - r.last_seen > 0.5:
+            return 'sit inside the person shape'
+        feats = self._latest
+        if feats is None:
+            return 'no face detected'
+        reason = self._gates(feats)
+        if reason:
+            return reason
+        now = time.time()
+        kept = [f for t, f in self._buf if now - t <= CLICK_WINDOW]
+        for f in kept or [feats]:                       # at least the click frame
+            self._samples.append(self._sample(f, dot, False))
+        return None
 
     def _finish(self):
         screen = [self._reader.width(), self._reader.height()]
@@ -501,15 +513,64 @@ class CalibrationView(QWidget):
         self.mode_box.setEnabled(True)
         self.cam_box.setEnabled(True)
         self._restart_preview()   # bring the live camera view back
+        clicks = [s for s in self._samples if not s['val']]   # click dots only
+        # 1. enough samples
         if len(self._samples) < 100:
-            self.status.setStyleSheet('color: #a00000;')
-            self.status.setText(
-                f'Only {len(self._samples)} samples captured. Keep your face in view and calibrate again.')
+            self._reject(f'Only {len(self._samples)} samples captured. '
+                         f'Click each dot while looking at it, and calibrate again.')
+            return
+        # 2. direction: the eyes must move with the dots (prints the means)
+        ok, info = self._direction_ok(clicks)
+        print('[calib]', info)
+        if not ok:
+            self._reject(f'Your gaze did not follow the dots ({info}). '
+                         f'Look at each dot as you click it, and calibrate again.')
+            return
+        # 3. spread: each dot's clicks must be steady
+        if not self._spread_ok(clicks):
+            self._reject('Your gaze was not steady on each dot. '
+                         'Look straight at each dot as you click, and calibrate again.')
             return
         self._saved_runs = calibration_store.add_session(self._user_id, self._samples, screen)
         self.cmd_label.setVisible(False)
         # Training now runs automatically as soon as a good calibration is saved.
         self._train()
+
+    def _reject(self, msg):
+        # Save nothing and tell the student why, so they can calibrate again.
+        self.status.setStyleSheet('color: #a00000;')
+        self.status.setText(msg)
+
+    def _direction_ok(self, samples):
+        # Looking right raises h_ratio; looking up raises v_openness. A student
+        # who clicks without looking gives about the same means left/right and
+        # top/bottom. The printed means show the real sign on our hardware - if a
+        # good run comes out negative, flip the two compares below.
+        left = [s['h_ratio'] for s in samples if s['target'][0] < 0.5]
+        right = [s['h_ratio'] for s in samples if s['target'][0] > 0.5]
+        top = [s['v_openness'] for s in samples if s['target'][1] < 0.5]
+        bottom = [s['v_openness'] for s in samples if s['target'][1] > 0.5]
+        if not (left and right and top and bottom):
+            return False, 'not enough dots'
+        hl, hr, vt, vb = mean(left), mean(right), mean(top), mean(bottom)
+        info = (f'h_ratio left={hl:.3f} right={hr:.3f} gap={hr - hl:+.3f}  '
+                f'v_openness top={vt:.3f} bottom={vb:.3f} gap={vt - vb:+.3f}')
+        ok = (hr - hl) >= MIN_GAP and (vt - vb) >= MIN_GAP
+        return ok, info
+
+    def _spread_ok(self, samples):
+        # Each dot's clicks should land on similar values; staring elsewhere while
+        # clicking makes them jump around (high std).
+        by_dot = {}
+        for s in samples:
+            by_dot.setdefault(tuple(s['target']), []).append(s)
+        for ss in by_dot.values():
+            if len(ss) < 2:
+                continue
+            if (pstdev(s['h_ratio'] for s in ss) > MAX_SPREAD
+                    or pstdev(s['v_openness'] for s in ss) > MAX_SPREAD):
+                return False
+        return True
 
     def _train(self):
         if not self._user_id:
