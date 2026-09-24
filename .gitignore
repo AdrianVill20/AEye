@@ -32,6 +32,7 @@ integration/app/evidence/
 # AEye - per-student calibration + trained models 
 integration/app/calibration_data/*.json
 integration/app/models/*.joblib
+integration/app/models/screen_area_*.json
 
 # AEye - large dlib face-landmark model (download locally; too big for git)
 shape_predictor_68_face_landmarks.dat

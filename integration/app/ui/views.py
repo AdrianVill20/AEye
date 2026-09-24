@@ -175,6 +175,7 @@ class DotWindow(QWidget):
         self.val_i = 0                        # current val dot
         self.val_elapsed = 0.0                # seconds on the current val dot (while facing)
         self.msg = ''                         # red reason text after a rejected click
+        self.pause = None                     # head turned / eyes closed reason, None = ok
         self.frame = None                     # newest camera picture, drawn faintly behind
         self.in_place = False                 # face inside the person shape
         self.last_seen = 0.0                  # last time any face was seen
@@ -252,7 +253,8 @@ class DotWindow(QWidget):
             outside = QPainterPath()
             outside.addRect(QRectF(self.rect()))
             p.fillPath(outside.subtracted(person), QColor(0, 0, 0, DIM))
-            p.setPen(QPen(QColor('#22c55e') if in_place else QColor('#ef4444'), 3))
+            ok = in_place and not self.pause
+            p.setPen(QPen(QColor('#22c55e') if ok else QColor('#ef4444'), 3))
             p.setBrush(Qt.NoBrush)
             p.drawPath(person)
         p.setFont(QFont('Arial', 16))
@@ -260,6 +262,9 @@ class DotWindow(QWidget):
             p.setPen(Qt.red)
             p.drawText(self.rect(), Qt.AlignHCenter | Qt.AlignTop,
                        '\nPaused - sit inside the person shape')
+        elif self.pause:
+            p.setPen(Qt.red)
+            p.drawText(self.rect(), Qt.AlignHCenter | Qt.AlignTop, '\nPaused - ' + self.pause)
         elif self.msg:
             p.setPen(Qt.red)
             p.drawText(self.rect(), Qt.AlignHCenter | Qt.AlignTop, '\n' + self.msg)
@@ -346,7 +351,6 @@ class CalibrationView(QWidget):
         self._reader = None       # the dot window
         self._samples = []
         self._buf = deque(maxlen=40)   # recent (time, feats) for click-window sampling
-        self._head0 = None        # neutral head pose, set on the first in-place frame
         self._latest = None       # newest feats, for the click-time checks
         self._user_id = None
         self._preview = None      # live face-cam preview shown before recording
@@ -424,7 +428,6 @@ class CalibrationView(QWidget):
         self._user_id = session.user_id if session else 'test_user'
         self._samples = []
         self._buf = deque(maxlen=40)
-        self._head0 = None
         self._latest = None
         self._stop_preview()   # hand the camera to the recorder
         # detect=False -> record only. We collect the raw features via
@@ -458,21 +461,21 @@ class CalibrationView(QWidget):
         r.last_seen = time.time()
         if not r.in_place:
             return                                      # outside the shape: pause, save nothing
-        if self._head0 is None:
-            self._head0 = (feats['yaw'], feats['pitch'])   # neutral, facing the screen
-        r.last_face = time.time()
         self._latest = feats
+        # head turned or eyes closed: pause, save nothing, val timer stops
+        r.pause = self._gates(feats)
+        if r.pause:
+            return
+        r.last_face = time.time()
         self._buf.append((time.time(), feats))
         # val phase: record the timed staring frames as test dots
-        if r.val_recording() and self._gates(feats) is None:
+        if r.val_recording():
             self._samples.append(self._sample(feats, r.val_point(), True))
 
     def _gates(self, feats):
         # Shared face/head/eye checks. None = ok, else a short red reason.
-        if self._head0 is None:
-            return 'sit inside the person shape'
-        if (abs(feats['yaw'] - self._head0[0]) > AWAY_DEG
-                or abs(feats['pitch'] - self._head0[1]) > AWAY_DEG):
+        # yaw/pitch 0 = facing the camera
+        if abs(feats['yaw']) > AWAY_DEG or abs(feats['pitch']) > AWAY_DEG:
             return 'keep your head facing the screen'
         if feats['openness'] < CLOSED:
             return 'keep your eyes open'
