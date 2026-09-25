@@ -62,6 +62,7 @@ class CheatDetector:
         self.hull = hull
         self.scaler = scaler   # isolation forest scaler
         self.model = model     # isolation forest
+        self.gaze_model = None # ridge regression, features -> screen spot
 
     @property
     def ready(self):
@@ -83,6 +84,7 @@ class CheatDetector:
             import joblib
             bundle = joblib.load(forest_model_path(user_id))
             detector.scaler, detector.model = bundle['scaler'], bundle['model']
+            detector.gaze_model = bundle.get('gaze')   # older models have none
             print(f'[CHEAT] Loaded isolation forest for "{user_id}".')
         except Exception as exc:
             print(f'[CHEAT] No isolation forest for "{user_id}" ({exc}); no severity.')
@@ -96,6 +98,13 @@ class CheatDetector:
         # inside = every edge turns left to the point
         return any(cross(self.hull[i], self.hull[(i + 1) % len(self.hull)], p) < 0
                    for i in range(len(self.hull)))
+
+    def gaze(self, values):
+        # Where on the screen the student looks, (x, y) 0 to 1. None = no gaze model.
+        if self.gaze_model is None:
+            return None
+        x, y = self.gaze_model.predict(self.scaler.transform([values]))[0]
+        return min(1.0, max(0.0, x)), min(1.0, max(0.0, y))
 
     def is_anomaly(self, values):
         # True if the isolation forest thinks this is unusual (values in FEATURES order).

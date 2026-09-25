@@ -4,7 +4,7 @@ from collections import deque
 from statistics import mean, pstdev
 from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, QPointF, QRectF
-from PySide6.QtGui import QPixmap, QPainter, QPainterPath, QTransform, QColor, QFont, QPen
+from PySide6.QtGui import QPixmap, QPainter, QPainterPath, QTransform, QColor, QFont, QPen, QRadialGradient
 from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QFrame, QComboBox, QMdiArea, QMdiSubWindow, QSizePolicy, QSplitter, QStackedWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QInputDialog, QCheckBox
 from paths import APP_DIR
 from workers.posture_worker import SideCameraWorker
@@ -109,6 +109,8 @@ AWAY_DEG = 25       # head turned more than this from the start = looking away
 CLOSED = 0.12       # eye openness below this = eyes closed
 DIM = 200            # 0 = see-through camera, 255 = black
 HEAD = (.5, .42, .22)  # head circle in the camera: center x, center y, radius (0 to 1 of the height)
+GAZE_R = 40          # gaze circle radius in pixels
+GAZE_SMOOTH = 0.2    # 0 to 1, lower = smoother but slower gaze circle
 
 # --- WebGazer-style click calibration --------------------------------------
 # One dot HOPS around the screen; the student follows it and clicks it. People
@@ -324,20 +326,35 @@ class ScreenBorder(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setGeometry(QApplication.primaryScreen().geometry())
         self.off = False
+        self.gaze = None   # smoothed (x, y) 0 to 1 where the student looks
 
     def set_gaze(self, feats):
-        # Turn the border on or off.
-        if feats.get('off_screen', False) != self.off:
-            self.off = feats.get('off_screen', False)
-            self.update()
+        # Turn the border on or off and move the gaze circle.
+        self.off = feats.get('off_screen', False)
+        g = feats.get('gaze')
+        if g is None or self.gaze is None:
+            self.gaze = g
+        else:   # smooth it so the circle does not shake
+            self.gaze = (self.gaze[0] + GAZE_SMOOTH * (g[0] - self.gaze[0]),
+                         self.gaze[1] + GAZE_SMOOTH * (g[1] - self.gaze[1]))
+        self.update()
 
     def paintEvent(self, event):
-        # Draw the red border.
+        # Draw the red border and the glass gaze circle.
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
         if self.off:
-            p = QPainter(self)
             p.setPen(QPen(QColor('#ef4444'), 12))
             p.drawRect(self.rect().adjusted(6, 6, -6, -6))
-            p.end()
+        if self.gaze is not None:
+            c = QPointF(self.gaze[0] * self.width(), self.gaze[1] * self.height())
+            glass = QRadialGradient(c - QPointF(GAZE_R / 3, GAZE_R / 3), GAZE_R * 1.5)
+            glass.setColorAt(0, QColor(255, 255, 255, 110))   # shine at the top left
+            glass.setColorAt(1, QColor(255, 255, 255, 15))
+            p.setBrush(glass)
+            p.setPen(QPen(QColor(255, 255, 255, 160), 2))
+            p.drawEllipse(c, GAZE_R, GAZE_R)
+        p.end()
 
 
 class CalibrationView(QWidget):
@@ -727,7 +744,7 @@ class DetectionView(QWidget):
         cams_row.addWidget(self.graph_check)
 
         # red border checkbox
-        self.border_check = QCheckBox('Show off-screen border')
+        self.border_check = QCheckBox('Show off-screen border + gaze')
         self.border_check.setChecked(True)
         self.border_check.toggled.connect(self._show_border)
         cams_row.addWidget(self.border_check)

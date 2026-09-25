@@ -220,7 +220,8 @@ class FrontCamWorker(QThread):
                 l_open = _get_eye_data(lm, LEFT_EYE_CORNERS,
                                        LEFT_UPPER_LIDS, LEFT_LOWER_LIDS, w, h)
 
-                h_ratio = _get_h_ratio(lm, (r_cx, r_cy), RIGHT_EYE_CORNERS, w)
+                h_ratio = (_get_h_ratio(lm, (r_cx, r_cy), RIGHT_EYE_CORNERS, w)
+                           + _get_h_ratio(lm, (l_cx, l_cy), LEFT_EYE_CORNERS, w)) / 2
                 self._prev_h = _ema(self._prev_h, h_ratio)
 
                 v_ratio = (_get_v_ratio(lm, RIGHT_IRIS_CENTER, RIGHT_EYE_CORNERS)
@@ -323,6 +324,7 @@ class FrontCamWorker(QThread):
                         # isolation forest: is this unusual for the student
                         unusual = self._detector.is_anomaly([feats[f] for f in FEATURES])
                         feats['off_screen'] = off_screen   # for the red border
+                        feats['gaze'] = self._detector.gaze([feats[f] for f in FEATURES])   # for the gaze circle
                         text = 'OFF SCREEN' if off_screen else 'on screen'
                         if unusual:
                             text += ' - unusual'

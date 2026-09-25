@@ -8,6 +8,7 @@ from statistics import median
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import IsolationForest
+from sklearn.linear_model import Ridge
 import joblib
 
 from cheat.calibration_store import load_sessions
@@ -46,9 +47,14 @@ def train_forest(user, samples, contamination=0.03):
     model.fit(Xs)
     flagged = int((model.predict(Xs) == -1).sum())
 
+    # gaze point: ridge regression from the click frames to the dot spot (0 to 1)
+    clicks = [s for run, s in samples if s.get('target') and not s.get('val') and not s.get('head')]
+    gaze = Ridge(alpha=1.0).fit(scaler.transform([[s[f] for f in FEATURES] for s in clicks]),
+                                [s['target'] for s in clicks])
+
     out = forest_model_path(user)
     out.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump({'scaler': scaler, 'model': model, 'features': FEATURES}, out)
+    joblib.dump({'scaler': scaler, 'model': model, 'features': FEATURES, 'gaze': gaze}, out)
     return len(X), flagged
 
 
