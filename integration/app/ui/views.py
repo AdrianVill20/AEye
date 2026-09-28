@@ -739,7 +739,7 @@ class DetectionView(QWidget):
 
         # Checkbox to hide the graph (some proctors only want the feeds).
         self.graph_check = QCheckBox('Show graph')
-        self.graph_check.setChecked(True)
+        self.graph_check.setChecked(False)
         self.graph_check.toggled.connect(self._show_graph)
         cams_row.addWidget(self.graph_check)
 
@@ -790,6 +790,7 @@ class DetectionView(QWidget):
         split.setChildrenCollapsible(False)
         split.addWidget(feeds)
         split.addWidget(self.graph_box)
+        self.graph_box.hide()  # graph starts hidden, the checkbox turns it on
         split.setStretchFactor(0, 3)   # cameras get most of the height by default
         split.setStretchFactor(1, 1)
         layout.addWidget(split, stretch=1)

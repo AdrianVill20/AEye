@@ -15,13 +15,13 @@ from paths import HEAD_POSE_DIR, MODELS_DIR
 MODEL = HEAD_POSE_DIR / 'pose_landmarker_heavy.task'
 PHONE_MODEL = MODELS_DIR / 'yolov8s.pt'
 
+# Only the upper body is drawn: arms, hands and torso (shoulders to hips).
+# Legs and face are left out.
+UPPER_BODY = [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
 POSE_CONNECTIONS = [
     (11, 12), (11, 13), (13, 15), (12, 14), (14, 16),
-    (11, 23), (12, 24), (23, 24), (23, 25), (24, 26),
-    (25, 27), (26, 28), (27, 29), (28, 30), (29, 31), (30, 32),
+    (11, 23), (12, 24), (23, 24),
     (15, 17), (15, 19), (15, 21), (16, 18), (16, 20), (16, 22),
-    (0, 1), (1, 2), (2, 3), (3, 7), (0, 4), (4, 5), (5, 6), (6, 8),
-    (9, 10),
 ]
 
 LEFT_SHOULDER = 11
@@ -78,7 +78,8 @@ def db_values(landmark):
 
 
 def draw_landmarks(frame, landmarks, h, w):
-    for lm in landmarks:
+    for i in UPPER_BODY:
+        lm = landmarks[i]
         px, py = int(lm.x * w), int(lm.y * h)
         cv2.circle(frame, (px, py), 3, (245, 66, 230), -1)
     for a, b in POSE_CONNECTIONS:
@@ -270,6 +271,7 @@ class SideCameraWorker(QThread):
         people_count = 0
         people_streak = 0
         people_blocked = False    # 2+ people in view -> posture paused
+        people_active = False     # is a 2+ people episode open right now?
 
         while self._running:
             ret, frame = cap.read()
@@ -308,6 +310,18 @@ class SideCameraWorker(QThread):
                     phone_active = False
                     self.cheat_detected.emit({'kind': 'end', 'source': 'phone',
                                               'ended_at': datetime.now()})
+                # One start event per episode, same as the phone flag. Only in
+                # the real tracking session (the one that logs to the database).
+                if self._log_writer is not None and not people_active:
+                    people_active = True
+                    self.cheat_detected.emit({
+                        'kind': 'start',
+                        'source': 'people',
+                        'user': self.session_user_id,
+                        'started_at': datetime.now(),
+                        'reason': f'{people_count} people detected',
+                        'screenshot': save_screenshot(frame, self.session_user_id, 'people'),
+                    })
                 display_stats = self._blank_stats()
                 signal = 'LOST'
                 stats = self._blank_stats()
@@ -318,6 +332,12 @@ class SideCameraWorker(QThread):
                 self.frame_ready.emit(qimg)
                 self.stats_ready.emit(stats)
                 continue
+
+            # Back to one person - close the episode.
+            if people_active:
+                people_active = False
+                self.cheat_detected.emit({'kind': 'end', 'source': 'people',
+                                          'ended_at': datetime.now()})
 
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)

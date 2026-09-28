@@ -115,7 +115,7 @@ CREATE TABLE cheating_events (
     session_user_id   VARCHAR(64)   NOT NULL,
     started_at        DATETIME(3)   NOT NULL,
     ended_at          DATETIME(3)   NULL,
-    reason            VARCHAR(64)   NULL,   -- 'looking down', 'gaze left', 'gaze right', 'phone detected'
+    reason            VARCHAR(64)   NULL,   -- 'looking down', 'gaze left', 'gaze right', 'phone detected', '2 people detected'
     screenshot_path   VARCHAR(255)  NULL,
 
     created_at        TIMESTAMP     DEFAULT CURRENT_TIMESTAMP,

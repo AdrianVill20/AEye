@@ -4,8 +4,8 @@ A 'start' event inserts the row: who, when it started, why, and the
 screenshot. The matching 'end' event fills in ended_at on that same row.
 Until then ended_at is NULL, which the proctor sees as "ongoing".
 
-Events come from two cameras ('gaze' = front, 'phone' = side). Each source
-keeps its own open row, so a phone ending never closes a gaze episode.
+Events come from two cameras ('gaze' = front, 'phone' / 'people' = side).
+Each source keeps its own open row, so a phone ending never closes a gaze episode.
 """
 
 import queue
