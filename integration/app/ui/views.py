@@ -4,7 +4,7 @@ from collections import deque
 from statistics import mean, pstdev
 from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, QPointF, QRectF
-from PySide6.QtGui import QPixmap, QPainter, QPainterPath, QTransform, QColor, QFont, QPen, QRadialGradient
+from PySide6.QtGui import QPixmap, QPainter, QPainterPath, QTransform, QColor, QFont, QPen, QRadialGradient, QShortcut, QKeySequence
 from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QRadioButton, QButtonGroup, QFrame, QComboBox, QMdiArea, QMdiSubWindow, QSizePolicy, QSplitter, QStackedWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QInputDialog, QCheckBox
 from paths import APP_DIR
 from workers.posture_worker import SideCameraWorker
@@ -743,6 +743,12 @@ class DetectionView(QWidget):
         self.graph_check.toggled.connect(self._show_graph)
         cams_row.addWidget(self.graph_check)
 
+        # Checkbox to show the head-pose matrix (hidden by default, like the graph).
+        self.matrix_check = QCheckBox('Show matrix')
+        self.matrix_check.setChecked(False)
+        self.matrix_check.toggled.connect(self._show_matrix)
+        cams_row.addWidget(self.matrix_check)
+
         # red border checkbox
         self.border_check = QCheckBox('Show off-screen border + gaze')
         self.border_check.setChecked(True)
@@ -795,6 +801,18 @@ class DetectionView(QWidget):
         split.setStretchFactor(1, 1)
         layout.addWidget(split, stretch=1)
 
+        # Head-pose matrix, as real text (easier to read than the tiny video
+        # overlay). Press P to freeze the camera and study it.
+        self.matrix_label = QLabel('Head-pose matrix R (3×3): --')
+        self.matrix_label.setFont(QFont('Courier New', 10))
+        self.matrix_label.setStyleSheet(
+            'background: #0f172a; color: #7dd3fc; padding: 6px; border-radius: 6px;')
+        self.matrix_label.hide()   # the "Show matrix" checkbox turns it on
+        layout.addWidget(self.matrix_label)
+
+        self._pause_shortcut = QShortcut(QKeySequence('P'), self)
+        self._pause_shortcut.activated.connect(self._toggle_pause)
+
         self.status = QLabel('Idle. Press Start to begin tracking.')
         self.status.setStyleSheet('color: gray;')
         layout.addWidget(self.status)
@@ -816,6 +834,9 @@ class DetectionView(QWidget):
 
     def _show_graph(self, on):
         self.graph_box.setVisible(on)
+
+    def _show_matrix(self, on):
+        self.matrix_label.setVisible(on)
 
     def _show_border(self, on):
         self.border.setVisible(on and self.front is not None)   # only when tracking
@@ -852,6 +873,7 @@ class DetectionView(QWidget):
         self.front = FrontCamWorker(camera_index=front_idx, session_user_id=user_id, detect=True)
         self.front.frame_ready.connect(self._show_front)
         self.front.cheat_detected.connect(self._on_cheat)
+        self.front.stats_ready.connect(self._update_matrix_label)
 
         self.graph.set_user(user_id)
         self.front.features_ready.connect(self.graph.on_features)
@@ -901,6 +923,22 @@ class DetectionView(QWidget):
         self.front_video.setPixmap(QPixmap.fromImage(qimg).scaled(
             self.front_video.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
+    def _update_matrix_label(self, stats):
+        m = stats.get('Matrix R', '--')
+        text = m if m == '--' else '\n' + m
+        self.matrix_label.setText(f'Head-pose matrix R (3×3):{text}')
+
+    def _toggle_pause(self):
+        if self.front is None:
+            return   # nothing running yet - nothing to pause
+        paused = self.front.toggle_pause()
+        if paused:
+            self.status.setStyleSheet('color: #7c5c00; font-weight: bold;')
+            self.status.setText('Paused (press P to resume) - camera frozen, read the matrix above.')
+        else:
+            self.status.setStyleSheet('color: #006600;')
+            self.status.setText(f'Tracking... ({self._count} flags)')
+
     def _show_side(self, qimg):
         self.side_video.setPixmap(QPixmap.fromImage(qimg).scaled(
             self.side_video.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
@@ -928,6 +966,7 @@ class DetectionView(QWidget):
         self.button.setText('Start Tracking')
         self.status.setStyleSheet('color: gray;')
         self.status.setText('Stopped.')
+        self.matrix_label.setText('Head-pose matrix R (3×3): --')
 
 
 class ExamView(QWidget):

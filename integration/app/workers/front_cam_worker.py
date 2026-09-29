@@ -1,4 +1,3 @@
-import math
 import re
 import time
 from pathlib import Path
@@ -12,6 +11,7 @@ from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
 
 from paths import HEAD_POSE_DIR, EVIDENCE_DIR
+from workers.head_pose import compute_head_pose
 
 MODEL = HEAD_POSE_DIR / 'face_landmarker.task'
 
@@ -110,6 +110,7 @@ class FrontCamWorker(QThread):
         self.session_user_id = session_user_id
         self.detect = detect              # run cheat detection this session?
         self._running = False
+        self._paused = False              # freeze on the last frame (P key) to read the matrix
         self._prev_h = 0.5
         self._prev_v = None
         self._calib_openness = []
@@ -117,6 +118,13 @@ class FrontCamWorker(QThread):
 
     def stop(self):
         self._running = False
+
+    def toggle_pause(self):
+        # Freezes the camera + all processing on the current frame so the
+        # student/teacher can read the head-pose matrix at leisure. Returns
+        # the new paused state.
+        self._paused = not self._paused
+        return self._paused
 
     def recalibrate(self):
         self._prev_h = 0.5
@@ -177,13 +185,17 @@ class FrontCamWorker(QThread):
                 'Gaze Direction': f'Camera {self.camera_index} unavailable',
                 'H Ratio': '--', 'V Direction': '--',
                 'Head Direction': '--', 'Yaw': '--', 'Pitch': '--', 'Roll': '--',
-                'Landmarks': '--',
+                'Landmarks': '--', 'Matrix R': '--',
             })
             landmarker.close()
             return
 
         timestamp_ms = 0
         while self._running:
+            if self._paused:
+                self.msleep(50)   # idle without reading a new frame - camera stays frozen
+                continue
+
             ret, frame = cap.read()
             if not ret:
                 continue
@@ -199,7 +211,7 @@ class FrontCamWorker(QThread):
             stats = {
                 'Gaze Direction': '--', 'H Ratio': '--', 'V Direction': '--',
                 'Head Direction': '--', 'Yaw': '--', 'Pitch': '--', 'Roll': '--',
-                'Landmarks': '--',
+                'Landmarks': '--', 'Matrix R': '--',
             }
 
             if result.face_landmarks:
@@ -268,10 +280,7 @@ class FrontCamWorker(QThread):
                 head_dir = None
                 if result.facial_transformation_matrixes:
                     R = np.array(result.facial_transformation_matrixes[0])[:3, :3]
-                    sy = math.sqrt(R[0, 0] ** 2 + R[1, 0] ** 2)
-                    yaw = math.degrees(math.atan2(-R[2, 0], sy))
-                    pitch = math.degrees(math.atan2(R[2, 1], R[2, 2]))
-                    roll = math.degrees(math.atan2(R[1, 0], R[0, 0]))
+                    yaw, pitch, roll = compute_head_pose(R)
 
                     stats['Yaw'] = f'{yaw:+.1f}'
                     stats['Pitch'] = f'{pitch:+.1f}'
@@ -286,6 +295,11 @@ class FrontCamWorker(QThread):
                     bar_y = 80
                     cv2.putText(frame, head_dir, (10, bar_y), FONT, 0.8, (0, 255, 0), 2)
                     cv2.putText(frame, f'Y {yaw:+.0f}  P {pitch:+.0f}  R {roll:+.0f}', (10, bar_y + 28), FONT, 0.6, (200, 200, 200), 1)
+
+                    # 3x3 rotation matrix R - kept out of the video frame; shown
+                    # in the UI's own "Show matrix" label instead.
+                    matrix_rows = ['  '.join(f'{v:+.2f}' for v in R[row]) for row in range(3)]
+                    stats['Matrix R'] = '\n'.join(matrix_rows)
 
                 record = (
                     self.session_user_id,
