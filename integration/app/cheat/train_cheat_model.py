@@ -39,7 +39,7 @@ def average_dots(sessions):
 
 def train_forest(user, samples, contamination=0.03):
     # Train the isolation forest on every calibration frame (old AEye code).
-    X = np.array([[s[f] for f in FEATURES] for run, s in samples], dtype=float)
+    X = np.array([[s[f] for f in FEATURES] for s in samples], dtype=float)
     scaler = StandardScaler().fit(X)
     Xs = scaler.transform(X)
     model = IsolationForest(n_estimators=200, contamination=contamination,
@@ -48,13 +48,13 @@ def train_forest(user, samples, contamination=0.03):
     flagged = int((model.predict(Xs) == -1).sum())
 
     # gaze point: ridge regression from the click frames to the dot spot (0 to 1)
-    clicks = [s for run, s in samples if s.get('target') and not s.get('val') and not s.get('head')]
+    clicks = [s for s in samples if s.get('target') and not s.get('val') and not s.get('head')]
     gaze = Ridge(alpha=1.0).fit(scaler.transform([[s[f] for f in FEATURES] for s in clicks]),
                                 [s['target'] for s in clicks])
 
     out = forest_model_path(user)
     out.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump({'scaler': scaler, 'model': model, 'features': FEATURES, 'gaze': gaze}, out)
+    joblib.dump({'scaler': scaler, 'model': model, 'gaze': gaze}, out)
     return len(X), flagged
 
 
@@ -82,7 +82,7 @@ def train(user):
     inside = sum(not area.outside(s['h_ratio'], s['v_openness']) for s in val)
 
     # isolation forest on all frames of all calibrations
-    samples = [(run, s) for run, session in enumerate(sessions) for s in session['samples']]
+    samples = [s for session in sessions for s in session['samples']]
     frames, flagged = train_forest(user, samples)
     return {'dots': len(points), 'corners': len(area.hull), 'runs': len(sessions),
             'val_inside': inside, 'val_total': len(val),

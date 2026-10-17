@@ -346,34 +346,31 @@ class SideCameraWorker(QThread):
 
             stats = self._blank_stats()
             good_frame = False
-            wrists = None
 
             if result.pose_landmarks:
-                for pose_lm in result.pose_landmarks:
-                    h, w = frame.shape[:2]
-                    draw_landmarks(frame, pose_lm, h, w)
-                    good_frame = (is_visible(pose_lm[LEFT_SHOULDER])
-                                  or is_visible(pose_lm[RIGHT_SHOULDER]))
+                pose_lm = result.pose_landmarks[0]
+                h, w = frame.shape[:2]
+                draw_landmarks(frame, pose_lm, h, w)
+                good_frame = (is_visible(pose_lm[LEFT_SHOULDER])
+                              or is_visible(pose_lm[RIGHT_SHOULDER]))
 
-                    curr_time = time.time()
-                    if curr_time - last_upd_time > upd_interval:
-                        last_upd_time = curr_time
-                        coords, raw = extract_posture(pose_lm)
-                        if coords is not None:
-                            display_stats.update(coords)
-                        if raw is not None and self._log_writer is not None:
-                            # Hidden joints go in as NULL rather than being
-                            # skipped, so the gaps stay visible in the data.
-                            record = (self.session_user_id, datetime.now()) + raw + (
-                                count_visible(pose_lm),
-                                1 if good_frame else 0,
-                            )
-                            self._log_writer.enqueue(record)
-                    wrists = extract_wrists(pose_lm)
-                    draw_hands(frame, wrists, w, h)
-                    stats.update(display_stats)
-                    stats['Landmarks detected (/33)'] = str(count_visible(pose_lm))
-                    break
+                curr_time = time.time()
+                if curr_time - last_upd_time > upd_interval:
+                    last_upd_time = curr_time
+                    coords, raw = extract_posture(pose_lm)
+                    display_stats.update(coords)
+                    if self._log_writer is not None:
+                        # Hidden joints go in as NULL rather than being
+                        # skipped, so the gaps stay visible in the data.
+                        record = (self.session_user_id, datetime.now()) + raw + (
+                            count_visible(pose_lm),
+                            1 if good_frame else 0,
+                        )
+                        self._log_writer.enqueue(record)
+                wrists = extract_wrists(pose_lm)
+                draw_hands(frame, wrists, w, h)
+                stats.update(display_stats)
+                stats['Landmarks detected (/33)'] = str(count_visible(pose_lm))
 
             draw_phones(frame, phone_boxes)
 

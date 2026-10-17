@@ -36,3 +36,6 @@ integration/app/models/screen_area_*.json
 
 # AEye - large dlib face-landmark model (download locally; too big for git)
 shape_predictor_68_face_landmarks.dat
+
+# VibeWise plugin state
+.vibe-wise/

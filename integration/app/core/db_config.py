@@ -89,18 +89,6 @@ def ensure_database():
                     INDEX idx_user_time (session_user_id, started_at)
                 ) ENGINE=InnoDB
             """)
-        else:
-            # Older copies of this table only had detected_at. Upgrade them in
-            # place so the rows already in it are kept.
-            cursor.execute("SHOW COLUMNS FROM cheating_events LIKE 'ended_at'")
-            if cursor.fetchone() is None:
-                cursor.execute("""
-                    ALTER TABLE cheating_events
-                        CHANGE detected_at started_at DATETIME(3) NOT NULL,
-                        ADD COLUMN ended_at DATETIME(3) NULL,
-                        ADD COLUMN reason VARCHAR(64) NULL,
-                        ADD COLUMN screenshot_path VARCHAR(255) NULL
-                """)
 
         conn.commit()
         cursor.close()
