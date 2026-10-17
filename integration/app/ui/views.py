@@ -140,17 +140,6 @@ def hop_path(targets):
     return path
 
 
-def person_path(w, h):
-    # Head + shoulders shape, in camera pixels, where the student should sit.
-    cx, cy, r = HEAD[0] * w, HEAD[1] * h, HEAD[2] * h
-    head = QPainterPath()
-    head.addEllipse(QPointF(cx, cy), r, r)
-    body = QPainterPath()
-    top = cy + r * 0.9
-    body.addRoundedRect(cx - r * 1.6, top, r * 3.2, h - top + r, r, r)
-    return head.united(body)
-
-
 class DotWindow(QWidget):
     """Full screen dots for calibration.
 
@@ -315,6 +304,18 @@ class DotWindow(QWidget):
         super().closeEvent(event)
 
 
+# a
+def person_path(w, h):
+    # Head + shoulders shape, in camera pixels, where the student should sit.
+    cx, cy, r = HEAD[0] * w, HEAD[1] * h, HEAD[2] * h
+    head = QPainterPath()
+    head.addEllipse(QPointF(cx, cy), r, r)
+    body = QPainterPath()
+    top = cy + r * 0.9
+    body.addRoundedRect(cx - r * 1.6, top, r * 3.2, h - top + r, r, r)
+    return head.united(body)
+
+
 class ScreenBorder(QWidget):
     # Red border around the screen when eyes are off screen.
 
@@ -355,6 +356,7 @@ class ScreenBorder(QWidget):
             p.setPen(QPen(QColor(255, 255, 255, 160), 2))
             p.drawEllipse(c, GAZE_R, GAZE_R)
         p.end()
+# a
 
 
 class CalibrationView(QWidget):
@@ -826,6 +828,10 @@ class DetectionView(QWidget):
         btn_row.addWidget(self.button, stretch=1)
         layout.addLayout(btn_row)
 
+    def _show_matrix(self, on):
+        self.matrix_label.setVisible(on)
+
+    # a
     def _back(self):
         # Cameras must be released before the calibration screen opens one.
         self.stop_all()
@@ -835,11 +841,9 @@ class DetectionView(QWidget):
     def _show_graph(self, on):
         self.graph_box.setVisible(on)
 
-    def _show_matrix(self, on):
-        self.matrix_label.setVisible(on)
-
     def _show_border(self, on):
         self.border.setVisible(on and self.front is not None)   # only when tracking
+    # a
 
     def _update_side_summary(self):
         name = self._side_label or f'Camera {self._side_idx}'

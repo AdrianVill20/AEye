@@ -57,6 +57,50 @@ PERSON_CONF = 0.5    # stricter than phones, so a poster / reflection isn't a 2n
 PEOPLE_HITS = 2      # need two passes with 2+ people before blocking (kills flicker)
 
 
+def draw_landmarks(frame, landmarks, h, w):
+    for i in UPPER_BODY:
+        lm = landmarks[i]
+        px, py = int(lm.x * w), int(lm.y * h)
+        cv2.circle(frame, (px, py), 3, (245, 66, 230), -1)
+    for a, b in POSE_CONNECTIONS:
+        if a < len(landmarks) and b < len(landmarks):
+            pt1 = (int(landmarks[a].x * w), int(landmarks[a].y * h))
+            pt2 = (int(landmarks[b].x * w), int(landmarks[b].y * h))
+            cv2.line(frame, pt1, pt2, (255, 255, 255), 1)
+
+
+def detect_objects(model, frame):
+    result = model.predict(frame, classes=[PERSON_CLASS, PHONE_CLASS],
+                           conf=PHONE_CONF, imgsz=PHONE_SIZE, verbose=False)[0]
+    people, phones = [], []
+    for box in result.boxes:
+        cls = int(box.cls[0])
+        x1, y1, x2, y2 = (int(v) for v in box.xyxy[0])
+        conf = float(box.conf[0])
+        if cls == PERSON_CLASS and conf >= PERSON_CONF:
+            people.append((x1, y1, x2, y2, conf))
+        elif cls == PHONE_CLASS:
+            phones.append((x1, y1, x2, y2, conf))
+    return people, phones
+
+
+def draw_people(frame, boxes):
+    # Red box around each detected person - only drawn while blocked.
+    for x1, y1, x2, y2, conf in boxes:
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+
+
+def draw_block_banner(frame, count):
+    # Big red error across the side feed while more than one person is in view.
+    h, w = frame.shape[:2]
+    cv2.rectangle(frame, (0, 0), (w - 1, h - 1), (0, 0, 255), 8)
+    cv2.putText(frame, f'{count} PEOPLE DETECTED', (20, 44),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 3)
+    cv2.putText(frame, 'Only one person allowed - posture paused', (20, 78),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+
+# a
 def is_visible(landmark):
     return landmark.visibility >= MIN_VISIBILITY
 
@@ -75,18 +119,6 @@ def db_values(landmark):
     if not is_visible(landmark):
         return (None, None, landmark.visibility)
     return (landmark.x, landmark.y, landmark.visibility)
-
-
-def draw_landmarks(frame, landmarks, h, w):
-    for i in UPPER_BODY:
-        lm = landmarks[i]
-        px, py = int(lm.x * w), int(lm.y * h)
-        cv2.circle(frame, (px, py), 3, (245, 66, 230), -1)
-    for a, b in POSE_CONNECTIONS:
-        if a < len(landmarks) and b < len(landmarks):
-            pt1 = (int(landmarks[a].x * w), int(landmarks[a].y * h))
-            pt2 = (int(landmarks[b].x * w), int(landmarks[b].y * h))
-            cv2.line(frame, pt1, pt2, (255, 255, 255), 1)
 
 
 def extract_posture(pose_lm):
@@ -141,45 +173,12 @@ def draw_hands(frame, wrists, w, h):
     cv2.rectangle(frame, p1, p2, (0, 255, 0), 2)
 
 
-def detect_objects(model, frame):
-    """One YOLO pass. Returns (people_boxes, phone_boxes) so the side camera can
-    watch for a second person and a phone at the same time. People use a stricter
-    confidence so a poster or reflection is not counted as someone."""
-    result = model.predict(frame, classes=[PERSON_CLASS, PHONE_CLASS],
-                           conf=PHONE_CONF, imgsz=PHONE_SIZE, verbose=False)[0]
-    people, phones = [], []
-    for box in result.boxes:
-        cls = int(box.cls[0])
-        x1, y1, x2, y2 = (int(v) for v in box.xyxy[0])
-        conf = float(box.conf[0])
-        if cls == PERSON_CLASS and conf >= PERSON_CONF:
-            people.append((x1, y1, x2, y2, conf))
-        elif cls == PHONE_CLASS:
-            phones.append((x1, y1, x2, y2, conf))
-    return people, phones
-
-
 def draw_phones(frame, boxes):
     for x1, y1, x2, y2, conf in boxes:
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
         cv2.putText(frame, f'PHONE {conf:.2f}', (x1, max(y1 - 8, 14)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-
-
-def draw_people(frame, boxes):
-    # Red box around each detected person - only drawn while blocked.
-    for x1, y1, x2, y2, conf in boxes:
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-
-
-def draw_block_banner(frame, count):
-    # Big red error across the side feed while more than one person is in view.
-    h, w = frame.shape[:2]
-    cv2.rectangle(frame, (0, 0), (w - 1, h - 1), (0, 0, 255), 8)
-    cv2.putText(frame, f'{count} PEOPLE DETECTED', (20, 44),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 3)
-    cv2.putText(frame, 'Only one person allowed - posture paused', (20, 78),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+# a
 
 
 class SideCameraWorker(QThread):

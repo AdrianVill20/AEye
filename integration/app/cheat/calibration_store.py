@@ -17,16 +17,6 @@ def calib_path(user_id):
     return CALIB_DIR / f'calibration_{_safe(user_id)}.json'
 
 
-def load_sessions(user_id):
-    # Get all saved runs, oldest first.
-    path = calib_path(user_id)
-    if not path.exists():
-        return []
-    with open(path, encoding='utf-8') as f:
-        data = json.load(f)
-    return data.get('sessions', [])   # old files have no runs
-
-
 def save_sessions(user_id, sessions):
     # Save the runs to the file.
     CALIB_DIR.mkdir(parents=True, exist_ok=True)
@@ -40,6 +30,17 @@ def save_sessions(user_id, sessions):
     return path
 
 
+# a
+def load_sessions(user_id):
+    # Get all saved runs, oldest first.
+    path = calib_path(user_id)
+    if not path.exists():
+        return []
+    with open(path, encoding='utf-8') as f:
+        data = json.load(f)
+    return data.get('sessions', [])   # old files have no runs
+
+
 def add_session(user_id, samples, screen):
     # Add one new run and return how many runs are saved.
     sessions = load_sessions(user_id)
@@ -50,3 +51,4 @@ def add_session(user_id, samples, screen):
     })
     save_sessions(user_id, sessions)
     return min(len(sessions), MAX_SESSIONS)
+# a
