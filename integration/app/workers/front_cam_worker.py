@@ -1,7 +1,7 @@
 import re
 import time
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 import cv2
 import numpy as np
 import mediapipe as mp
@@ -36,7 +36,7 @@ HEAD_TH = 5
 
 # --- Cheat-detection tuning ---
 ALERT_SECONDS = 2.0      # a flag must persist this long before it counts
-
+PRINT_FOREST = True      # print every frame's 5 features + score + path vs cut-off to the console
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 
@@ -104,9 +104,10 @@ class FrontCamWorker(QThread):
     features_ready = Signal(object)   # per-frame features (for calibration JSON)
     cheat_detected = Signal(object)   # {'kind': 'start', ...} or {'kind': 'end', ...} per episode
 
-    def __init__(self, camera_index=0, session_user_id=None, detect=False, parent=None):
+    def __init__(self, camera_index=0, session_user_id=None, detect=False, video_path=None, parent=None):
         super().__init__(parent)
         self.camera_index = camera_index
+        self.video_path = video_path # video file to play (None = use the camera).
         self.session_user_id = session_user_id
         self.detect = detect              # run cheat detection this session?
         self._running = False
@@ -169,6 +170,10 @@ class FrontCamWorker(QThread):
             from cheat.cheat_detector import CheatDetector, FEATURES
             self._detector = CheatDetector.load(self.session_user_id)
 
+            # Isolation Forest: load this student's forest once, when tracking starts
+            from cheat import isolation_forest
+            self._forest = isolation_forest.load(self.session_user_id)
+
         options = vision.FaceLandmarkerOptions(
             base_options=mp_python.BaseOptions(model_asset_path=str(MODEL)),
             running_mode=vision.RunningMode.VIDEO,
@@ -179,7 +184,9 @@ class FrontCamWorker(QThread):
         )
         landmarker = vision.FaceLandmarker.create_from_options(options)
 
-        cap = self._open_camera()
+        cap = cv2.VideoCapture(self.video_path) if self.video_path else self._open_camera()
+                # video: how long one frame lasts, so it plays at normal speed (camera keeps its own speed)
+        frame_gap = 1.0 / (cap.get(cv2.CAP_PROP_FPS) or 30) if self.video_path else 0
         if not cap.isOpened():
             self.stats_ready.emit({
                 'Gaze Direction': f'Camera {self.camera_index} unavailable',
@@ -196,14 +203,20 @@ class FrontCamWorker(QThread):
                 self.msleep(50)   # idle without reading a new frame - camera stays frozen
                 continue
 
+            loop_start = time.time()      # when this frame started (for the wait at the end)
             ret, frame = cap.read()
             if not ret:
-                continue
+                if self.video_path:
+                    break                 # end of the video: leave the loop
+                continue                  # camera hiccup: just try again
+
+            # video: seconds into the file, to match frames with cheat.txt (None for the camera)
+            video_sec = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000 if self.video_path else None
 
             frame = cv2.flip(frame, 1)
             h, w = frame.shape[:2]
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
+            
             mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
             result = landmarker.detect_for_video(mp_img, timestamp_ms)
             timestamp_ms += 33
@@ -211,8 +224,12 @@ class FrontCamWorker(QThread):
             stats = {
                 'Gaze Direction': '--', 'H Ratio': '--', 'V Direction': '--',
                 'Head Direction': '--', 'Yaw': '--', 'Pitch': '--', 'Roll': '--',
-                'Landmarks': '--', 'Matrix R': '--',
+                'Landmarks': '--', 'Matrix R': '--', 'Model': '--',
             }
+
+            if video_sec is not None:
+                stats['Video Time'] = f'{int(video_sec // 60):02d}:{video_sec % 60:04.1f}'
+                cv2.putText(frame, stats['Video Time'], (w - 120, 28), FONT, 0.7, (255, 255, 255), 2)
 
             if result.face_landmarks:
                 lm = result.face_landmarks[0]
@@ -335,14 +352,28 @@ class FrontCamWorker(QThread):
                     if ready:
                         # graham scan: are the eyes outside the screen area
                         off_screen = self._detector.outside(self._prev_h, self._prev_v)
-                        # isolation forest: is this unusual for the student
-                        unusual = self._detector.is_anomaly([feats[f] for f in FEATURES])
                         feats['off_screen'] = off_screen   # for the red border
                         feats['gaze'] = self._detector.gaze([feats[f] for f in FEATURES])   # for the gaze circle
                         text = 'OFF SCREEN' if off_screen else 'on screen'
-                        if unusual:
-                            text += ' - unusual'
                         color = (0, 0, 255) if off_screen else (0, 255, 255)
+
+                        # Isolation Forest: is this frame unusual for this student? (label only)
+                        camera_frame = [feats[name] for name in isolation_forest.FEATURES]
+                                                #### video test: print the 5 numbers, the score and the path vs the cut-off
+                        # if not self.video_path and self._forest is not None: ##for live camera
+                        # if self.video_path and self._forest is not None: ##for video test
+                            # score, frame_path, cutoff_path = isolation_forest.explain(self._forest, camera_frame)
+                            # h_ratio, v_openness, yaw, pitch, roll = camera_frame
+                            # result = 'UNUSUAL' if frame_path < cutoff_path else 'usual'
+                            # print(f"{stats.get('Video Time', '--')}  "
+                            #       f"h={h_ratio:.3f} v={v_openness:.3f} yaw={yaw:+.1f} pitch={pitch:+.1f} roll={roll:+.1f}  "
+                            #       f"score={score:.3f}  path={frame_path:.2f} vs cut={cutoff_path:.2f}  -> {result}")
+                        if isolation_forest.is_unusual(self._forest, camera_frame):
+                            text += ' - unusual'
+                        else:
+                            text += ' - usual'
+                        stats['Model'] = text   # e.g. 'on screen - usual', shown in the video test window
+
                         cv2.putText(frame, text, (10, 135), FONT, 0.7, color, 2)
 
                     self.features_ready.emit(feats)   # calibration collects these
@@ -351,13 +382,11 @@ class FrontCamWorker(QThread):
                     if ready:
                         suspicious = off_screen
 
-                        now = time.time()
+                        # video: count video time, so time spent paused doesn't add to the 2 seconds
+                        now = video_sec if self.video_path else time.time()
                         if suspicious:
                             if self._anom_since is None:
                                 self._anom_since = now
-                                self._frames = self._odd = 0   # count unusual frames in this look
-                            self._frames += 1
-                            self._odd += unusual
                             held = now - self._anom_since
                         else:
                             self._anom_since = None
@@ -371,14 +400,13 @@ class FrontCamWorker(QThread):
                             if not self._alert_active:
                                 self._alert_active = True
                                 reason = 'eyes off screen'
-                                if self._odd * 2 >= self._frames:   # half the look was unusual
-                                    reason += ' (unusual)'
                                 self.cheat_detected.emit({
                                     'kind': 'start',
                                     'source': 'gaze',
                                     'user': self.session_user_id,
                                     # when the behaviour began, not when the 2s hold ran out
-                                    'started_at': datetime.fromtimestamp(self._anom_since),
+                                    'started_at': datetime.now() - timedelta(seconds=held),
+                                    'video_time': self._anom_since if self.video_path else None,
                                     'reason': reason,
                                     'screenshot': save_screenshot(frame, self.session_user_id, 'gaze'),
                                 })
@@ -392,6 +420,8 @@ class FrontCamWorker(QThread):
             qimg = QImage(rgb_out.data, w, h, 3 * w, QImage.Format_RGB888).copy()
             self.frame_ready.emit(qimg)
             self.stats_ready.emit(stats)
+            if frame_gap:   # video only: wait out the rest of this frame's time
+                self.msleep(max(0, int((frame_gap - (time.time() - loop_start)) * 1000)))
 
         cap.release()
         landmarker.close()

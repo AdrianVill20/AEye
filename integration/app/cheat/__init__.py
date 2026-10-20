@@ -1,2 +1,2 @@
-"""Cheat detection: calibration store, the per-student anomaly model, and the
-Isolation Forest training script."""
+"""Cheat detection: calibration store, the per-student screen area + gaze model,
+and the training script."""

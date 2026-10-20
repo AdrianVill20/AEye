@@ -1,5 +1,4 @@
 # Screen area made with a Graham scan, and a check if the eyes are outside it.
-# Isolation Forest scores how unusual a moment is for this student.
 
 import json
 import math
@@ -7,7 +6,7 @@ import re
 
 from paths import MODELS_DIR
 
-# values the isolation forest uses (same order as training)
+# values the gaze model uses (same order as training)
 FEATURES = ['h_ratio', 'v_openness', 'yaw', 'pitch', 'roll']
 # how much to grow the outline (1.11 = exactly the screen edge, lower = stricter)
 MARGIN = 1.20
@@ -19,8 +18,8 @@ def user_model_path(user_id):
     return MODELS_DIR / f'screen_area_{safe}.json'
 
 
-def forest_model_path(user_id):
-    # File where the student's isolation forest is saved.
+def gaze_model_path(user_id):
+    # File where the student's gaze model (scaler + ridge) is saved.
     safe = re.sub(r'[^A-Za-z0-9_-]+', '_', str(user_id)) if user_id else 'unknown'
     return MODELS_DIR / f'cheat_model_{safe}.joblib'
 
@@ -58,10 +57,9 @@ def grow(hull, margin=MARGIN):
 class CheatDetector:
     # Holds the screen area and checks the eyes against it.
 
-    def __init__(self, hull=None, scaler=None, model=None):
+    def __init__(self, hull=None):
         self.hull = hull
-        self.scaler = scaler   # isolation forest scaler
-        self.model = model     # isolation forest
+        self.scaler = None     # scales the features for the gaze model
         self.gaze_model = None # ridge regression, features -> screen spot
 
     @property
@@ -71,7 +69,7 @@ class CheatDetector:
 
     @classmethod
     def load(cls, user_id=None):
-        # Load the saved screen area and isolation forest (either can be missing).
+        # Load the saved screen area and gaze model (either can be missing).
         detector = cls()
         try:
             with open(user_model_path(user_id), encoding='utf-8') as f:
@@ -82,12 +80,12 @@ class CheatDetector:
             print(f'[CHEAT] No screen area for "{user_id}" ({exc}); detection off.')
         try:
             import joblib
-            bundle = joblib.load(forest_model_path(user_id))
-            detector.scaler, detector.model = bundle['scaler'], bundle['model']
+            bundle = joblib.load(gaze_model_path(user_id))
+            detector.scaler = bundle['scaler']
             detector.gaze_model = bundle.get('gaze')   # older models have none
-            print(f'[CHEAT] Loaded isolation forest for "{user_id}".')
+            print(f'[CHEAT] Loaded gaze model for "{user_id}".')
         except Exception as exc:
-            print(f'[CHEAT] No isolation forest for "{user_id}" ({exc}); no severity.')
+            print(f'[CHEAT] No gaze model for "{user_id}" ({exc}); no gaze circle.')
         return detector
 
     def outside(self, h_ratio, v_openness):
@@ -106,18 +104,6 @@ class CheatDetector:
         x, y = self.gaze_model.predict(self.scaler.transform([values]))[0]
         return min(1.0, max(0.0, x)), min(1.0, max(0.0, y))
 
-    def is_anomaly(self, values):
-        # True if the isolation forest thinks this is unusual (values in FEATURES order).
-        if self.scaler is None or self.model is None:
-            return False
-        try:
-            import numpy as np
-            x = np.asarray(values, dtype=float).reshape(1, -1)
-            x = self.scaler.transform(x)
-            return self.model.predict(x)[0] == -1   # -1 = unusual
-        except Exception:
-            return False
-
 
 if __name__ == '__main__':      # test: python -m cheat.cheat_detector
     square = graham_scan([(0, 0), (2, 0), (2, 2), (0, 2), (1, 1), (1, 0)])
@@ -127,5 +113,4 @@ if __name__ == '__main__':      # test: python -m cheat.cheat_detector
     assert area.outside(3, 1) and area.outside(1, -0.5)          # right, below
     assert not CheatDetector(grow(square, 2.0)).outside(3, 1)    # bigger outline covers it
     assert not CheatDetector().outside(99, 99)                   # no area = no flag
-    assert not CheatDetector().is_anomaly([0.5, 0.1, 0, 8, 0])   # no forest = normal
     print('hull ok:', square)

@@ -16,7 +16,7 @@ from ui.gaze_graph import GazeGraph
 from ui.hull_view import HullView
 from core.db_config import get_connection
 from ui.phone_camera import SideCameraDialog, populate_camera_combo, pick_cameras, CameraPreview
-
+from ui.video_test import VideoTestWindow
 
 def _combo_index(combo):
     """Camera index behind the selected item in a name-populated combo."""
@@ -93,9 +93,21 @@ class TrainWorker(QThread):
     def run(self):
         try:
             from cheat.train_cheat_model import train   # heavy imports happen here
-            self.done.emit(train(self.user))
+            result = train(self.user)
         except Exception as exc:
             self.failed.emit(str(exc))
+            return
+
+        #isolation forest training (it runs from here)
+        try:
+            from cheat import isolation_forest
+            isolation_forest.train(self.user)
+        except Exception as exc:
+            print(f'[ISOLATION] Training failed: {exc}')
+
+        self.done.emit(result)
+
+
 
 
 # dot spots near the screen edges (0 to 1)
@@ -811,6 +823,7 @@ class DetectionView(QWidget):
         layout.addWidget(self.matrix_label)
 
         self._pause_shortcut = QShortcut(QKeySequence('P'), self)
+        self._pause_shortcut.setContext(Qt.WidgetWithChildrenShortcut)   # P only works inside this view
         self._pause_shortcut.activated.connect(self._toggle_pause)
 
         self.status = QLabel('Idle. Press Start to begin tracking.')
@@ -1005,12 +1018,13 @@ class AnalysisDashboard(QWidget):
         self.web_tab = None
         # --- MDI area: each analysis view is its own movable sub-window ---
         self.mdi = QMdiArea()
-
+        self.video_test = VideoTestWindow()     # make the window first (kept on self so stop_all can stop it)
         # Every view, in the order its "open" button appears in the toolbar.
         view_list = [
             ('Front + Side Cam', self.front_side_tab),
             ('Graham Scan', self.front_side_tab.detect.hull_view),   # graham scan tab
             ('Proctor', ProctorView()),
+            ('Video Test', self.video_test),
         ]
 
         # One sub-window per view, plus one button that (re)opens that view.
@@ -1056,7 +1070,7 @@ class AnalysisDashboard(QWidget):
         )
         exit_btn.clicked.connect(self._exit_with_password)
         toolbar.addWidget(exit_btn)
-
+        
         # Toolbar on top, MDI area filling the rest.
         layout = QVBoxLayout(self)
         layout.addLayout(toolbar)
@@ -1097,6 +1111,7 @@ class AnalysisDashboard(QWidget):
 
     def stop_all(self):
         self.front_side_tab.stop_all()
+        self.video_test._stop() 
 
 class ProctorView(QWidget):
     """Proctor Mode: the cheating episodes students' sessions wrote to MySQL,
