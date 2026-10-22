@@ -368,6 +368,9 @@ class FrontCamWorker(QThread):
                             # print(f"{stats.get('Video Time', '--')}  "
                             #       f"h={h_ratio:.3f} v={v_openness:.3f} yaw={yaw:+.1f} pitch={pitch:+.1f} roll={roll:+.1f}  "
                             #       f"score={score:.3f}  path={frame_path:.2f} vs cut={cutoff_path:.2f}  -> {result}")
+                            # cv2.putText(frame, f"score={score:.3f}  path={frame_path:.2f} vs cut={cutoff_path:.2f}  -> {result}",
+                                        # (10, h - 50), FONT, 0.7, (0, 0, 255), 2)
+
                         if isolation_forest.is_unusual(self._forest, camera_frame):
                             text += ' - unusual'
                         else:

@@ -86,7 +86,7 @@ integration/
          posture_logger.py     <- posture_logs writer
          cheat_logger.py       <- cheating_events writer (one row per episode)
       cheat/                   <- cheat detection + model training
-         cheat_detector.py     <- loads the student's Isolation Forest model
+         cheat_detector.py     <- loads the student's screen area + gaze model
          train_cheat_model.py  <- trains it from the calibration JSON (run by hand)
          calibration_store.py  <- reads / writes the calibration JSON
       calibration_data/        <- per-student calibration JSON  (data)
@@ -106,11 +106,10 @@ integration/
   numbers (`h_ratio`, `v_openness`, `yaw`, `pitch`, `roll`), and paints the frame
   into the window.
 - During calibration those five numbers are collected into a JSON file.
-  `train_cheat_model.py` fits an Isolation Forest on them — the student's
-  personal "this is normal" model.
-- During tracking, `cheat_detector.py` scores each frame against that model. A
-  flag needs all three: the model says unusual, the eyes are off screen, and it
-  holds for 2 seconds.
+  `train_cheat_model.py` builds the student's screen area from them (Graham
+  scan) and fits the gaze model.
+- During tracking, `cheat_detector.py` checks each frame against that screen
+  area. A flag needs the eyes off screen for 2 seconds.
 - `posture_worker.py` runs the side camera and logs shoulder/wrist positions.
   It does **not** feed the detection decision yet.
 - `ProctorView` reads the `cheating_events` table.
