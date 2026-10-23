@@ -35,6 +35,9 @@ def gather_data(user):
 def train(user):
    
     feature_table = gather_data(user) # 1. get the table of calibration frames
+    
+    # print("Feature Table:", feature_table)
+    print("Sample Length", len(feature_table))
 
      #setup the model
     forest_model = IsolationForest(

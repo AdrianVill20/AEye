@@ -70,6 +70,9 @@ class HullView(QWidget):
         p.setBrush(QColor(34, 197, 94, 40))
         p.drawPolygon(QPolygonF([to_screen(q) for q in self.area.hull]))
         # blue = graham scan outline
+        # p.setPen(QColor('#cbd5e1'))
+        #             p.drawText(to_screen(q) + QPointF(8, 4), f'({q[0]:.4f}, {q[1]:.4f})')
+        #             p.setPen(Qt.NoPen)
         p.setPen(QPen(QColor('#60a5fa'), 2))
         p.setBrush(Qt.NoBrush)
         p.drawPolygon(QPolygonF([to_screen(q) for q in self.scan]))

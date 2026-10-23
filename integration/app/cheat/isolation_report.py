@@ -4,7 +4,7 @@ import numpy as np
 
 from isolation_forest import gather_data, MODELS_DIR   
 
-USER = 'demo'                
+USER = 'count'                
 
 # 1. load the trained forest that train() saved in Stage 3
 model_path = MODELS_DIR / f'isolation_{USER}.joblib'

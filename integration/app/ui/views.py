@@ -111,8 +111,8 @@ class TrainWorker(QThread):
 
 
 # dot spots near the screen edges (0 to 1)
-POINTS_9 = [(.5, .5), (.05, .05), (.95, .05), (.05, .95), (.95, .95), (.5, .05), (.05, .5), (.95, .5), (.5, .95)]
-POINTS_5 = [(.5, .5), (.05, .05), (.95, .05), (.05, .95), (.95, .95)]
+POINTS_9 = [(.5, .5), (.02, .02), (.98, .02), (.02, .98), (.98, .98), (.5, .02), (.02, .5), (.98, .5), (.5, .98)]
+POINTS_5 = [(.5, .5), (.02, .02), (.98, .02), (.02, .98), (.98, .98)]
 # test dots, not used to make the area
 VAL_POINTS = [(.3, .3), (.7, .3), (.3, .7), (.7, .7)]
 READY_SEC = 2       # wait before the first dot
@@ -355,6 +355,8 @@ class ScreenBorder(QWidget):
         # Draw the red border and the glass gaze circle.
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
+        # p.setPen(QColor('white'))
+        # p.drawText(c + QPointF(GAZE_R + 6, 4), f'({int(c.x())}, {int(c.y())})')
         if self.off:
             p.setPen(QPen(QColor('#ef4444'), 12))
             p.drawRect(self.rect().adjusted(6, 6, -6, -6))
@@ -384,6 +386,7 @@ class CalibrationView(QWidget):
         self._user_id = None
         self._preview = None      # live face-cam preview shown before recording
         self._saved_runs = 0      # calibration runs saved (for the "done" message)
+        self.count = 0
 
         card_l = QVBoxLayout(self)
         card_l.setContentsMargins(20, 20, 20, 20)
@@ -500,6 +503,8 @@ class CalibrationView(QWidget):
         # val phase: record the timed staring frames as test dots
         if r.val_recording():
             self._samples.append(self._sample(feats, r.val_point(), True))
+            self.count += 1
+            print("validation dots", f'{self.count}')
 
     def _gates(self, feats):
         # Shared face/head/eye checks. None = ok, else a short red reason.
@@ -534,6 +539,8 @@ class CalibrationView(QWidget):
         kept = [f for t, f in self._buf if now - t <= CLICK_WINDOW]
         for f in kept or [feats]:                       # at least the click frame
             self._samples.append(self._sample(f, dot, False))
+            self.count += 1
+            print("dot", f'{self.count}')
         return None
 
     def _finish(self):
@@ -547,6 +554,7 @@ class CalibrationView(QWidget):
         self._restart_preview()   # bring the live camera view back
         clicks = [s for s in self._samples if not s['val']]   # click dots only
         # 1. enough samples
+        print(len(self._samples))
         if len(self._samples) < 100:
             self._reject(f'Only {len(self._samples)} samples captured. '
                          f'Click each dot while looking at it, and calibrate again.')
@@ -577,7 +585,6 @@ class CalibrationView(QWidget):
         # Looking right raises h_ratio; looking up raises v_openness. A student
         # who clicks without looking gives about the same means left/right and
         # top/bottom. The printed means show the real sign on our hardware - if a
-        # good run comes out negative, flip the two compares below.
         left = [s['h_ratio'] for s in samples if s['target'][0] < 0.5]
         right = [s['h_ratio'] for s in samples if s['target'][0] > 0.5]
         top = [s['v_openness'] for s in samples if s['target'][1] < 0.5]

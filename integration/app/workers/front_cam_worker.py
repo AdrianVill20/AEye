@@ -360,17 +360,17 @@ class FrontCamWorker(QThread):
                         # Isolation Forest: is this frame unusual for this student? (label only)
                         camera_frame = [feats[name] for name in isolation_forest.FEATURES]
                                                 #### video test: print the 5 numbers, the score and the path vs the cut-off
-                        # if not self.video_path and self._forest is not None: ##for live camera
+                        if not self.video_path and self._forest is not None: ##for live camera
                         # if self.video_path and self._forest is not None: ##for video test
-                            # score, frame_path, cutoff_path = isolation_forest.explain(self._forest, camera_frame)
-                            # h_ratio, v_openness, yaw, pitch, roll = camera_frame
-                            # result = 'UNUSUAL' if frame_path < cutoff_path else 'usual'
-                            # print(f"{stats.get('Video Time', '--')}  "
-                            #       f"h={h_ratio:.3f} v={v_openness:.3f} yaw={yaw:+.1f} pitch={pitch:+.1f} roll={roll:+.1f}  "
-                            #       f"score={score:.3f}  path={frame_path:.2f} vs cut={cutoff_path:.2f}  -> {result}")
-                            # cv2.putText(frame, f"score={score:.3f}  path={frame_path:.2f} vs cut={cutoff_path:.2f}  -> {result}",
-                                        # (10, h - 50), FONT, 0.7, (0, 0, 255), 2)
-
+                            score, frame_path, cutoff_path = isolation_forest.explain(self._forest, camera_frame)
+                            h_ratio, v_openness, yaw, pitch, roll = camera_frame
+                            result = 'UNUSUAL' if frame_path < cutoff_path else 'usual'
+                            print(f"{stats.get('Video Time', '--')}  "
+                                  f"h={h_ratio:.3f} v={v_openness:.3f} yaw={yaw:+.1f} pitch={pitch:+.1f} roll={roll:+.1f}  "
+                                  f"score={score:.3f}  path={frame_path:.2f} vs cut={cutoff_path:.2f}  -> {result}")
+                            cv2.putText(frame, f"score={score:.3f}  path={frame_path:.2f} vs cut={cutoff_path:.2f}  -> {result}",
+                                        (10, h - 50), FONT, 0.7, (0, 0, 255), 2)
+                        
                         if isolation_forest.is_unusual(self._forest, camera_frame):
                             text += ' - unusual'
                         else:

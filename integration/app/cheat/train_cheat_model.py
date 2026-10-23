@@ -19,8 +19,8 @@ def dot_points(session):
     # One point per dot (middle value of its frames).
     dots = {}
     for s in session['samples']:
-        # skip test dots, and head turn frames from older calibrations
-        if s.get('target') and not s.get('head') and not s.get('val'):
+        # skip test dots
+        if s.get('target') and not s.get('val'):
             dots.setdefault(tuple(s['target']), []).append((s['h_ratio'], s['v_openness']))
     return {t: (median(p[0] for p in d), median(p[1] for p in d))
             for t, d in dots.items() if len(d) >= 10}
@@ -42,9 +42,10 @@ def train_gaze(user, samples):
     scaler = StandardScaler().fit(X)
 
     # gaze point: ridge regression from the click frames to the dot spot (0 to 1)
-    clicks = [s for run, s in samples if s.get('target') and not s.get('val') and not s.get('head')]
-    gaze = Ridge(alpha=1.0).fit(scaler.transform([[s[f] for f in FEATURES] for s in clicks]),
-                                [s['target'] for s in clicks])
+    clicks = [s for run, s in samples if s.get('target') and not s.get('val')]
+    eyes = scaler.transform([[s[f] for f in FEATURES] for s in clicks])   # 5 numbers per frame
+    dots = [s['target'] for s in clicks]                                   # dot spot per frame
+    gaze = Ridge(alpha=1.0).fit(eyes, dots)
 
     out = gaze_model_path(user)
     out.parent.mkdir(parents=True, exist_ok=True)
