@@ -1,5 +1,6 @@
 import random
 import time
+from paths import APP_DIR, MODELS_DIR
 from collections import deque
 from statistics import mean, pstdev
 from pathlib import Path
@@ -97,14 +98,6 @@ class TrainWorker(QThread):
         except Exception as exc:
             self.failed.emit(str(exc))
             return
-
-        #isolation forest training (it runs from here)
-        try:
-            from cheat import isolation_forest
-            isolation_forest.train(self.user)
-        except Exception as exc:
-            print(f'[ISOLATION] Training failed: {exc}')
-
         self.done.emit(result)
 
 
@@ -740,6 +733,13 @@ class DetectionView(QWidget):
         self._side_label = names[self._side_idx] if self._side_idx < len(names) else ''
         self.front_box.setMinimumWidth(150)
         cams_row.addWidget(self.front_box)
+                # which Isolation Forest to use (every *_isolation_forest.joblib in models/)
+        cams_row.addSpacing(16)
+        cams_row.addWidget(QLabel('Forest:'))
+        self.forest_box = QComboBox()
+        for forest_file in sorted(MODELS_DIR.glob('*_isolation_forest.joblib')):
+            self.forest_box.addItem(forest_file.name)
+        cams_row.addWidget(self.forest_box)
         cams_row.addSpacing(16)
         self.side_summary = QLabel()
         self.side_summary.setStyleSheet('color: #334155;')
@@ -883,7 +883,7 @@ class DetectionView(QWidget):
         side_idx = self._side_idx
 
         # Front cam: cheat detection (model + rule + 2s).
-        self.front = FrontCamWorker(camera_index=front_idx, session_user_id=user_id, detect=True)
+        self.front = FrontCamWorker(camera_index=front_idx, session_user_id=user_id, detect=True,  forest_path=MODELS_DIR / self.forest_box.currentText())
         self.front.frame_ready.connect(self._show_front)
         self.front.cheat_detected.connect(self._on_cheat)
         self.front.stats_ready.connect(self._update_matrix_label)
@@ -917,6 +917,7 @@ class DetectionView(QWidget):
 
         self._count = 0
         self.front_box.setEnabled(False)   # can't change cameras mid-session
+        self.forest_box.setEnabled(False)  # can't change the forest mid-session
         self.choose_side_btn.setEnabled(False)
         self.status.setStyleSheet('color: #006600;')
         self.status.setText('Tracking... (0 flags)')
@@ -975,6 +976,7 @@ class DetectionView(QWidget):
             self.logger = None
         self.border.hide()
         self.front_box.setEnabled(True)
+        self.forest_box.setEnabled(True)
         self.choose_side_btn.setEnabled(True)
         self.button.setText('Start Tracking')
         self.status.setStyleSheet('color: gray;')

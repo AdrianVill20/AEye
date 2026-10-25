@@ -36,7 +36,6 @@ HEAD_TH = 5
 
 # --- Cheat-detection tuning ---
 ALERT_SECONDS = 2.0      # a flag must persist this long before it counts
-PRINT_FOREST = True      # print every frame's 5 features + score + path vs cut-off to the console
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 
@@ -104,10 +103,11 @@ class FrontCamWorker(QThread):
     features_ready = Signal(object)   # per-frame features (for calibration JSON)
     cheat_detected = Signal(object)   # {'kind': 'start', ...} or {'kind': 'end', ...} per episode
 
-    def __init__(self, camera_index=0, session_user_id=None, detect=False, video_path=None, parent=None):
+    def __init__(self, camera_index=0, session_user_id=None, detect=False, video_path=None, parent=None,  forest_path=None):
         super().__init__(parent)
         self.camera_index = camera_index
         self.video_path = video_path # video file to play (None = use the camera).
+        self.forest_path = forest_path 
         self.session_user_id = session_user_id
         self.detect = detect              # run cheat detection this session?
         self._running = False
@@ -166,13 +166,12 @@ class FrontCamWorker(QThread):
         self._detector = None
         self._anom_since = None
         self._alert_active = False
+        self._forest = None  
         if self.detect:
             from cheat.cheat_detector import CheatDetector, FEATURES
             self._detector = CheatDetector.load(self.session_user_id)
-
-            # Isolation Forest: load this student's forest once, when tracking starts
-            from cheat import isolation_forest
-            self._forest = isolation_forest.load(self.session_user_id)
+            from cheat import isolation_forest 
+            self._forest = isolation_forest.load(self.forest_path)   #load isolation forest from path
 
         options = vision.FaceLandmarkerOptions(
             base_options=mp_python.BaseOptions(model_asset_path=str(MODEL)),
@@ -356,28 +355,16 @@ class FrontCamWorker(QThread):
                         feats['gaze'] = self._detector.gaze([feats[f] for f in FEATURES])   # for the gaze circle
                         text = 'OFF SCREEN' if off_screen else 'on screen'
                         color = (0, 0, 255) if off_screen else (0, 255, 255)
-
-                        # Isolation Forest: is this frame unusual for this student? (label only)
-                        camera_frame = [feats[name] for name in isolation_forest.FEATURES]
-                                                #### video test: print the 5 numbers, the score and the path vs the cut-off
-                        # if not self.video_path and self._forest is not None: ##for live camera
-                        # if self.video_path and self._forest is not None: ##for video test
-                            # score, frame_path, cutoff_path = isolation_forest.explain(self._forest, camera_frame)
-                            # h_ratio, v_openness, yaw, pitch, roll = camera_frame
-                            # result = 'UNUSUAL' if frame_path < cutoff_path else 'usual'
-                            # print(f"{stats.get('Video Time', '--')}  "
-                            #       f"h={h_ratio:.3f} v={v_openness:.3f} yaw={yaw:+.1f} pitch={pitch:+.1f} roll={roll:+.1f}  "
-                            #       f"score={score:.3f}  path={frame_path:.2f} vs cut={cutoff_path:.2f}  -> {result}")
-                            # cv2.putText(frame, f"score={score:.3f}  path={frame_path:.2f} vs cut={cutoff_path:.2f}  -> {result}",
-                                        # (10, h - 50), FONT, 0.7, (0, 0, 255), 2)
-
-                        if isolation_forest.is_unusual(self._forest, camera_frame):
-                            text += ' - unusual'
-                        else:
-                            text += ' - usual'
-                        stats['Model'] = text   # e.g. 'on screen - usual', shown in the video test window
-
+                        stats['Model'] = text   # e.g. 'on screen', shown in the video test window
                         cv2.putText(frame, text, (10, 135), FONT, 0.7, color, 2)
+                 
+                  # Isolation Forest (from Colab): is this frame unusual? label only, no alert yet
+   
+                    if self._forest is not None:
+                        label = 'unusual' if isolation_forest.is_unusual(self._forest, feats) else 'usual'
+                        stats['Forest'] = label
+                        cv2.putText(frame, f'Forest: {label}', (10, 160), FONT, 0.7, (0, 165, 255), 2)
+                        
 
                     self.features_ready.emit(feats)   # calibration collects these
 

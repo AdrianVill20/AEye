@@ -22,7 +22,7 @@ class VideoTestWindow(QWidget):
         self.worker = None        # the FrontCamWorker while a video plays, None when stopped
         self.video_path = None    # the chosen video file
         self.flags = []           # video times of every cheating flag, e.g. ['00:12.4', '01:03.0']
-        self.last_line = ''       # last "time | usual/unusual" text, kept for when we pause
+        self.last_line = ''       # last "time | on/off screen" text, kept for when we pause
 
         layout = QVBoxLayout(self)
 
@@ -35,12 +35,18 @@ class VideoTestWindow(QWidget):
         self.file_label = QLabel('No video chosen')
         row.addWidget(self.file_label, stretch=1)
 
-        # every student that has a trained forest: models/isolation_<user>.joblib
+        # every student that has a trained screen area: models/screen_area_<user>.json
         row.addWidget(QLabel('Model of:'))
         self.user_box = QComboBox()
-        for model_file in sorted(MODELS_DIR.glob('isolation_*.joblib')):
-            self.user_box.addItem(model_file.stem.removeprefix('isolation_'))
+        for model_file in sorted(MODELS_DIR.glob('screen_area_*.json')):
+            self.user_box.addItem(model_file.stem.removeprefix('screen_area_'))
         row.addWidget(self.user_box)
+                # every trained forest in models/, e.g. session01_isolation_forest.joblib
+        row.addWidget(QLabel('Forest:'))
+        self.forest_box = QComboBox()
+        for forest_file in sorted(MODELS_DIR.glob('*_isolation_forest.joblib')):
+            self.forest_box.addItem(forest_file.name)
+        row.addWidget(self.forest_box)
         layout.addLayout(row)
 
         # --- The video picture (same dark box style as Live Tracking) ---
@@ -99,9 +105,10 @@ class VideoTestWindow(QWidget):
 
         # the SAME worker as Live Tracking, only fed a video file instead of the camera
         self.worker = FrontCamWorker(session_user_id=self.user_box.currentText(),
-                                     detect=True, video_path=self.video_path)
+                                     detect=True, video_path=self.video_path, forest_path=MODELS_DIR / self.forest_box.currentText())
+        
         self.worker.frame_ready.connect(self._show_frame)      # each picture
-        self.worker.stats_ready.connect(self._show_stats)      # time + usual/unusual
+        self.worker.stats_ready.connect(self._show_stats)      # time + on/off screen
         self.worker.cheat_detected.connect(self._on_cheat)     # 2-second flags
         self.worker.finished.connect(self._on_finished)        # the thread ended (video over)
 
@@ -113,6 +120,7 @@ class VideoTestWindow(QWidget):
         self.pause_btn.setEnabled(True)
         self.pick_btn.setEnabled(False)       # no changing the video or model mid-play
         self.user_box.setEnabled(False)
+        self.forest_box.setEnabled(False)     #lock the forest selection while playing
 
     def _show_frame(self, qimg):
         # Fit the picture inside the box without stretching it.
@@ -120,8 +128,9 @@ class VideoTestWindow(QWidget):
             self.video.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
     def _show_stats(self, stats):
-        # e.g. "Time 00:12.4  |  OFF SCREEN - unusual"
-        self.last_line = f"Time {stats.get('Video Time', '--')}  |  {stats.get('Model', '--')}"
+        # e.g. "Time 00:12.4  |  OFF SCREEN"
+        self.last_line = (f"Time {stats.get('Video Time', '--')}  |  {stats.get('Model', '--')}"
+                          f"  |  Forest: {stats.get('Forest', '--')}")
         self.status.setText(self.last_line)
 
     def _on_cheat(self, event):
@@ -153,6 +162,7 @@ class VideoTestWindow(QWidget):
         self.pause_btn.setEnabled(False)
         self.pick_btn.setEnabled(True)
         self.user_box.setEnabled(True)
+        self.forest_box.setEnabled(True)
 
     def _on_finished(self):
         # Runs when the video reaches its end (the worker's break).
