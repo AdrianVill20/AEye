@@ -98,13 +98,6 @@ class TrainWorker(QThread):
             self.failed.emit(str(exc))
             return
 
-        #isolation forest training (it runs from here)
-        try:
-            from cheat import isolation_forest
-            isolation_forest.train(self.user)
-        except Exception as exc:
-            print(f'[ISOLATION] Training failed: {exc}')
-
         self.done.emit(result)
 
 
