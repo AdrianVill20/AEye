@@ -18,6 +18,7 @@ from ui.hull_view import HullView
 from core.db_config import get_connection
 from ui.phone_camera import SideCameraDialog, populate_camera_combo, pick_cameras, CameraPreview
 from ui.video_test import VideoTestWindow
+import numpy as np
 
 def _combo_index(combo):
     """Camera index behind the selected item in a name-populated combo."""
@@ -170,7 +171,7 @@ class DotWindow(QWidget):
     def __init__(self, mode, on_done, on_cancel, on_click):
         super().__init__()
         self.setWindowTitle('AEye Calibration')
-        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        # self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         self._on_done = on_done
         self._on_cancel = on_cancel
         self._on_click = on_click            # CalibrationView: checks + records a click
@@ -468,7 +469,8 @@ class CalibrationView(QWidget):
         self._reader = DotWindow(self.mode_box.currentText(),
                                  on_done=self._finish, on_cancel=self._cancel_reading,
                                  on_click=self._click)
-        self._reader.showFullScreen()
+        # self._reader.showFullScreen()
+        self._reader.showMaximized()
 
     def _collect(self, feats):
         # Buffer recent frames; a valid click copies a short window of them. In
@@ -527,6 +529,8 @@ class CalibrationView(QWidget):
         kept = [f for t, f in self._buf if now - t <= CLICK_WINDOW]
         for f in kept or [feats]:                       # at least the click frame
             self._samples.append(self._sample(f, dot, False))
+            print(f"   h_ratio={f['h_ratio']:.3f}, v_openness={f['v_openness']:.3f}, yaw={f['yaw']:.1f}, pitch={f['pitch']:.1f}, roll={f['roll']:.1f}")
+        print(f"Dot clicked: {dot}, kept {len(kept)} frames")
         return None
 
     def _finish(self):

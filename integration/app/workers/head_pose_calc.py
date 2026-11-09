@@ -10,9 +10,9 @@ import numpy as np
 from head_pose import compute_head_pose
 
 R = np.array([
-    [0.83, 0.00, 0.00],
-    [0.00, 0.98, 0.00],
-    [-0.55, -0.18, 0.81],
+    [0.94, 0.00, 0.00],
+    [0.17, 0.98, 0.00],
+    [-0.30, 0.10, 0.95],
 ])
 
 yaw, pitch, roll = compute_head_pose(R)
