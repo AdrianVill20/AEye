@@ -123,14 +123,14 @@ integration/
 The forest learns what **normal** head pose + eye position looks like from
 videos, then flags frames that don't fit.
 
-1. In Google Drive make `MyDrive/AEye_IF/` with:
-   - `normal/`: videos with only normal exam behaviour
-   - `test/`: videos to validate on (may contain cheating)
-   - `labels.csv`: the cheating times in the test videos, as `video,start_s,end_s`
-     (video name without `.mp4`)
+1. Put the videos in one Drive folder (default `MyDrive/10 Sessions`; for a
+   shared folder use right-click -> Organize -> Add shortcut -> My Drive).
+   File names decide the role: `normal` trains, `cheat` validates, `side` is
+   skipped. Put `colab/labels.csv` in that folder too: the cheating times of the
+   front videos, built from `cheat.txt` (it falls back to `cheat.txt` if missing).
 2. Upload `colab/AEye_Isolation_Forest.ipynb` to Colab and run all cells.
-   It writes the validation numbers (`report_general.json`) and graphs
-   (`figures/`) to the Drive folder: feature distributions, score distribution,
+   It writes the validation numbers (`report_general.json`, `events.csv`) and
+   graphs (`figures/`) to `MyDrive/AEye_IF_output`: feature distributions, score distribution,
    ROC/PR curves, confusion matrix + caught cheating stretches, per-video
    timelines, threshold sweep, decision maps, feature importance,
    cross-validation and learning curve.
@@ -141,7 +141,7 @@ videos, then flags frames that don't fit.
 The features are computed by `app/cheat/frame_features.py`, the same code the
 app uses live. After editing that file or `colab/aeye_isolation_forest.py`, run
 `python colab/build_notebook.py` to rebuild the notebook. To run it on a PC
-instead of Colab: `python colab/aeye_isolation_forest.py <data folder>`
+instead of Colab: `python colab/aeye_isolation_forest.py <video folder> [<output folder>]`
 (needs `pandas` and `matplotlib`).
 
 ## Databases

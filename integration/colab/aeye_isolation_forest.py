@@ -15,34 +15,38 @@
 # The feature code is copied from `integration/app/cheat/frame_features.py`, so the
 # numbers here are exactly what the app computes live.
 #
-# ## 1. Put your videos in Google Drive
+# ## 1. Videos in Google Drive
+#
+# One folder holds all the videos (`VIDEO_DIR` below). File names decide the role:
+#
+# - name contains **`normal`** -> trains the forest (what normal looks like)
+# - name contains **`cheat`** -> validates it
+# - name contains **`side`** -> skipped (side camera; the forest uses the front camera)
+#
+# The cheating times come from `labels.csv` (or `cheat.txt`) in that folder or in
+# `OUT_DIR`, seconds or `mm:ss` from the start of each video, one row per stretch:
 #
 # ```
-# MyDrive/AEye_IF/
-#     normal/        <- videos with ONLY normal behaviour (used to learn "normal")
-#     test/          <- videos to validate on (may contain cheating)
-#     labels.csv     <- when the cheating happens in the test videos
+# video,start_s,end_s,label
+# 03_cheating_front,2,10,looking_left_at_notes
 # ```
 #
-# `labels.csv` (seconds from the start of each video; one row per cheating stretch):
-#
-# ```
-# video,start_s,end_s
-# 03_cheating_front,2,7
-# 03_cheating_front,23,27
-# ```
-#
-# `video` is the file name without `.mp4`. A test video with no rows counts as
-# fully normal (useful for measuring false alarms).
+# A shared folder must first be added to your Drive: right-click it ->
+# **Organize -> Add shortcut** -> My Drive. Results are written to `OUT_DIR`, so the
+# video folder can stay read-only.
 #
 # ## 2. Run all cells (Runtime -> Run all)
 #
-# At the end you get `isolation_general.npz`. Copy it into
-# `integration/app/models/` and the app's Live Tracking and Video Test will use it.
+# Reading the videos is the slow part (~1-3 h for 2.5 h of video). Each finished
+# video is cached in `OUT_DIR/features/`, so if Colab disconnects just run all again
+# and it carries on. At the end you get `isolation_general.npz`; copy it into
+# `integration/app/models/` and Live Tracking / Video Test use it.
 
 # %%
 # ---------------- settings (change these) ----------------
-DRIVE_DIR = '/content/drive/MyDrive/AEye_IF'   # folder with normal/, test/, labels.csv
+VIDEO_DIR = '/content/drive/MyDrive/10 Sessions'      # the videos (+ labels.csv / cheat.txt)
+OUT_DIR = '/content/drive/MyDrive/AEye_IF_output'     # features, graphs, report, model go here
+NORMAL_WORD, CHEAT_WORD, SKIP_WORD = 'normal', 'cheat', 'side'   # file-name words (any case)
 MODEL_NAME = 'general'      # app loads isolation_<student>.npz first, then isolation_general.npz
 
 N_ESTIMATORS = 200          # number of trees
@@ -68,19 +72,24 @@ if IN_COLAB:
     subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', 'mediapipe'], check=True)
     from google.colab import drive
     drive.mount('/content/drive')
-    WORK = Path(DRIVE_DIR)
+    VIDEOS, WORK = Path(VIDEO_DIR), Path(OUT_DIR)
     APP_CHEAT_DIR = None
 else:
-    # running on a PC: python aeye_isolation_forest.py <data folder>
-    WORK = Path(os.environ.get('AEYE_IF_DIR') or (sys.argv[1] if len(sys.argv) > 1 else 'AEye_IF'))
+    # running on a PC: python aeye_isolation_forest.py <video folder> [<output folder>]
+    args = sys.argv[1:]
+    VIDEOS = Path(os.environ.get('AEYE_IF_DIR') or (args[0] if args else 'AEye_IF'))
+    WORK = Path(args[1]) if len(args) > 1 else VIDEOS / 'output'
     here = Path(globals().get('__file__', Path.cwd() / 'x')).resolve().parent
     APP_CHEAT_DIR = here.parent / 'app' / 'cheat'
 
-NORMAL_DIR, TEST_DIR = WORK / 'normal', WORK / 'test'
+if not VIDEOS.is_dir():
+    raise SystemExit(f'Video folder not found: {VIDEOS}\n'
+                     'Shared folder? Add a shortcut to it in My Drive, then set VIDEO_DIR.')
 FEAT_DIR, FIG_DIR = WORK / 'features', WORK / 'figures'
-for d in (NORMAL_DIR, TEST_DIR, FEAT_DIR, FIG_DIR):
+for d in (FEAT_DIR, FIG_DIR):
     d.mkdir(parents=True, exist_ok=True)
-print('data folder:', WORK)
+print('videos :', VIDEOS)
+print('output :', WORK)
 
 # %% [markdown]
 # ### Feature code (copied from `app/cheat/frame_features.py` - edit it there, not here)
@@ -145,35 +154,95 @@ if not TASK.exists():
 VIDEO_EXT = {'.mp4', '.avi', '.mov', '.mkv', '.webm'}
 
 
-def video_features(path, group):
-    cache = FEAT_DIR / f'{group}__{path.stem}.csv'
-    if cache.exists():
-        return pd.read_csv(cache)
-    start = time.time()
-    rows = ff.extract_video_features(path, TASK, every=FRAME_EVERY,
-                                     progress=lambda i, n: print(f'   {path.name}: frame {i}/{n}', end='\r'))
-    df = pd.DataFrame(rows)
-    df.to_csv(cache, index=False)
-    print(f'   {path.name}: {len(df)} frames, {df.face.mean():.0%} with a face, '
-          f'{time.time() - start:.0f}s')
-    return df
+def find_videos():
+    """[(group, path)]: normal/ + test/ sub-folders if they exist, else by file name."""
+    if (VIDEOS / 'normal').is_dir():
+        pairs = [('normal', p) for p in (VIDEOS / 'normal').iterdir()]
+        pairs += [('test', p) for p in (VIDEOS / 'test').iterdir()] if (VIDEOS / 'test').is_dir() else []
+    else:
+        pairs = []
+        for p in VIDEOS.iterdir():
+            name = p.stem.lower()
+            if SKIP_WORD and SKIP_WORD in name:
+                continue
+            if NORMAL_WORD in name:
+                pairs.append(('normal', p))
+            elif CHEAT_WORD in name:
+                pairs.append(('test', p))
+    return sorted((g, p) for g, p in pairs if p.suffix.lower() in VIDEO_EXT)
 
+
+videos = find_videos()
+for group, path in videos:
+    print(f'{group:7s} {path.name}')
+if not any(g == 'normal' for g, _ in videos):
+    raise SystemExit(f'No normal videos found in {VIDEOS} (file names need "{NORMAL_WORD}").')
+
+
+def cache_path(group, path):
+    return FEAT_DIR / f'{group}__{path.stem}.csv'
+
+
+def save_features(group, path, rows, seconds):
+    df = pd.DataFrame(rows)
+    df.to_csv(cache_path(group, path), index=False)
+    print(f'   done {path.name}: {len(df)} frames, {df.face.mean():.0%} with a face, {seconds / 60:.1f} min')
+
+
+def _extract(path):
+    start = time.time()
+    return ff.extract_video_features(path, TASK, every=FRAME_EVERY), time.time() - start
+
+
+todo = [(g, p) for g, p in videos if not cache_path(g, p).exists()]
+print(f'\n{len(videos) - len(todo)} videos already cached, {len(todo)} to read')
+if todo and IN_COLAB and (os.cpu_count() or 1) > 1:
+    # Colab (Linux): read several videos at once, one per CPU core
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+    with ProcessPoolExecutor(max_workers=os.cpu_count()) as pool:
+        jobs = {pool.submit(_extract, p): (g, p) for g, p in todo}
+        for job in as_completed(jobs):
+            g, p = jobs[job]
+            save_features(g, p, *job.result())
+else:
+    for g, p in todo:
+        print(f'   reading {p.name} ...')
+        save_features(g, p, *_extract(p))
 
 frames = []
-for group, folder in (('normal', NORMAL_DIR), ('test', TEST_DIR)):
-    for path in sorted(p for p in folder.iterdir() if p.suffix.lower() in VIDEO_EXT):
-        df = video_features(path, group)
-        df['video'], df['group'] = path.stem, group
-        frames.append(df)
-if not frames:
-    raise SystemExit(f'No videos found. Put normal videos in {NORMAL_DIR} and test videos in {TEST_DIR}.')
+for group, path in videos:
+    df = pd.read_csv(cache_path(group, path))
+    df['video'], df['group'] = path.stem, group
+    frames.append(df)
 data = pd.concat(frames, ignore_index=True)
 data = data[data.face.astype(bool)].dropna(subset=FEATURES).reset_index(drop=True)
 
-# labels: 1 = cheating, 0 = normal
-labels_path = WORK / 'labels.csv'
-labels = pd.read_csv(labels_path) if labels_path.exists() else pd.DataFrame(columns=['video', 'start_s', 'end_s'])
-labels['video'] = labels['video'].astype(str).str.replace(r'\.\w+$', '', regex=True)
+
+def to_seconds(v):
+    v = str(v).strip()
+    if ':' in v:                       # mm:ss or hh:mm:ss
+        secs = 0.0
+        for part in v.split(':'):
+            secs = secs * 60 + float(part)
+        return secs
+    return float(v)
+
+
+# labels: 1 = cheating, 0 = normal. labels.csv or cheat.txt, in the video folder or OUT_DIR
+label_files = [d / n for n in ('labels.csv', 'cheat.txt') for d in (WORK, VIDEOS) if (d / n).exists()]
+if label_files:
+    labels = pd.read_csv(label_files[0], skipinitialspace=True, dtype=str).dropna(subset=['video'])
+    labels = labels[labels.video.str.strip() != '']
+    print('labels from', label_files[0])
+else:
+    labels = pd.DataFrame(columns=['video', 'start_s', 'end_s'])
+    print('no labels.csv / cheat.txt found')
+by_lower = {p.stem.lower(): p.stem for _, p in videos}     # match names ignoring case and .mp4
+labels['video'] = labels.video.str.strip().str.replace(r'\.\w+$', '', regex=True).str.lower().map(by_lower)
+labels = labels.dropna(subset=['video']).copy()
+labels['start_s'] = labels.start_s.map(to_seconds)
+labels['end_s'] = labels.end_s.map(to_seconds)
+labels['end_s'] = np.maximum(labels.end_s, labels.start_s + 1)   # "04:15-04:15" = that whole second
 data['cheat'] = 0
 for lab in labels.itertuples():
     inside = (data.video == lab.video) & (data.t >= lab.start_s) & (data.t <= lab.end_s)
@@ -288,24 +357,42 @@ for video, df in test.groupby('video'):
     df = df.sort_values('t')
     flags = flag_intervals(df)
     flags_by_video[video] = flags
-    truth = [(r.start_s, r.end_s) for r in labels[labels.video == video].itertuples()]
+    # back-to-back stretches (e.g. left then right, gap <= 1 s) are one cheating episode
+    truth = []
+    for r in labels[labels.video == video].sort_values('start_s').itertuples():
+        if truth and r.start_s <= truth[-1][1] + 1:
+            truth[-1][1] = max(truth[-1][1], r.end_s)
+        else:
+            truth.append([r.start_s, r.end_s])
     for tr in truth:
         hits = [f for f in flags if overlaps(f, tr)]
-        events.append({'video': video, 'start_s': tr[0], 'end_s': tr[1], 'caught': bool(hits),
+        events.append({'video': video, 'start_s': tr[0], 'end_s': tr[1], 'seconds': tr[1] - tr[0],
+                       'caught': bool(hits),
                        'delay_s': max(0.0, hits[0][0] + ALERT_SECONDS - tr[0]) if hits else None})
     false_alarms += sum(not any(overlaps(f, tr) for tr in truth) for f in flags)
     normal_minutes += (df.cheat == 0).sum() / max(1, len(df)) * (df.t.max() - df.t.min()) / 60
 events = pd.DataFrame(events)
 if len(events):
+    long = events[events.seconds >= ALERT_SECONDS]   # the 2-second rule can only catch these
     results.update(events_total=int(len(events)), events_caught=int(events.caught.sum()),
                    event_recall=float(events.caught.mean()),
+                   events_at_least_alert_s=int(len(long)),
+                   event_recall_at_least_alert_s=float(long.caught.mean()) if len(long) else None,
                    mean_delay_s=float(events.delay_s.dropna().mean()) if events.caught.any() else None)
 results.update(false_alarm_flags=int(false_alarms),
                false_alarms_per_min=float(false_alarms / normal_minutes) if normal_minutes else None)
 
 print(json.dumps(results, indent=2))
 if len(events):
-    print(events.to_string(index=False))
+    events['long_enough'] = events.seconds >= ALERT_SECONDS
+    per_video = events.groupby('video').agg(episodes=('caught', 'size'), caught=('caught', 'sum'),
+                                            episodes_2s=('long_enough', 'sum'),
+                                            mean_delay_s=('delay_s', 'mean'))
+    per_video['false_alarms'] = [sum(not any(overlaps(f, (e.start_s, e.end_s))
+                                             for e in events[events.video == v].itertuples())
+                                     for f in flags_by_video.get(v, [])) for v in per_video.index]
+    print(per_video.round(2).to_string())
+    events.to_csv(WORK / 'events.csv', index=False)     # every episode, caught or missed
 if not has_labels:
     print('\nNo labelled cheating in test/ - only false-alarm numbers are available.')
 
@@ -393,13 +480,16 @@ if has_labels:
     a1.set(xticks=[0, 1], yticks=[0, 1], xticklabels=['said normal', 'said unusual'],
            yticklabels=['really normal', 'really cheating'], title='Frames')
     if len(events):
-        caught = int(events.caught.sum())
-        a2.barh(['cheating stretches'], [caught], color=NORMAL_C, label='caught')
-        a2.barh(['cheating stretches'], [len(events) - caught], left=[caught], color=CHEAT_C,
-                label='missed')
+        rows = [('all cheating episodes', events),
+                (f'episodes >= {ALERT_SECONDS:g} s', events[events.long_enough])]
+        for i, (name, ev) in enumerate(rows):
+            caught = int(ev.caught.sum())
+            a2.barh([name], [caught], color=NORMAL_C, label='caught' if i == 0 else None)
+            a2.barh([name], [len(ev) - caught], left=[caught], color=CHEAT_C,
+                    label='missed' if i == 0 else None)
+            a2.text(len(ev), i, f'  {caught} of {len(ev)} caught', va='center', color=INK)
         a2.barh(['false-alarm flags'], [false_alarms], color=INK2, label='flag with no cheating')
-        a2.text(len(events), 0, f'  {caught} of {len(events)} caught', va='center', color=INK)
-        a2.text(false_alarms, 1, f'  {false_alarms} false alarms', va='center', color=INK)
+        a2.text(false_alarms, 2, f'  {false_alarms} false alarms', va='center', color=INK)
         a2.set_xlim(0, max(len(events), false_alarms) * 1.45 + 1)
         a2.set_title(f'Events with the {ALERT_SECONDS:g}-second rule')
         a2.set_xlabel('count')
