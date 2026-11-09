@@ -110,9 +110,39 @@ integration/
   scan) and fits the gaze model.
 - During tracking, `cheat_detector.py` checks each frame against that screen
   area. A flag needs the eyes off screen for 2 seconds.
+- If `models/isolation_<student>.npz` or `models/isolation_general.npz` exists,
+  the Isolation Forest also scores each frame. "Unusual" frames count toward the
+  same 2-second flag (turn this off with `USE_FOREST_FLAGS` in
+  `front_cam_worker.py`). See *Isolation Forest (Google Colab)* below.
 - `posture_worker.py` runs the side camera and logs shoulder/wrist positions.
   It does **not** feed the detection decision yet.
 - `ProctorView` reads the `cheating_events` table.
+
+## Isolation Forest (Google Colab)
+
+The forest learns what **normal** head pose + eye position looks like from
+videos, then flags frames that don't fit.
+
+1. In Google Drive make `MyDrive/AEye_IF/` with:
+   - `normal/`: videos with only normal exam behaviour
+   - `test/`: videos to validate on (may contain cheating)
+   - `labels.csv`: the cheating times in the test videos, as `video,start_s,end_s`
+     (video name without `.mp4`)
+2. Upload `colab/AEye_Isolation_Forest.ipynb` to Colab and run all cells.
+   It writes the validation numbers (`report_general.json`) and graphs
+   (`figures/`) to the Drive folder: feature distributions, score distribution,
+   ROC/PR curves, confusion matrix + caught cheating stretches, per-video
+   timelines, threshold sweep, decision maps, feature importance,
+   cross-validation and learning curve.
+3. Copy `isolation_general.npz` into `app/models/`. Name it
+   `isolation_<student>.npz` (set `MODEL_NAME` in the notebook) to give one
+   student their own model.
+
+The features are computed by `app/cheat/frame_features.py`, the same code the
+app uses live. After editing that file or `colab/aeye_isolation_forest.py`, run
+`python colab/build_notebook.py` to rebuild the notebook. To run it on a PC
+instead of Colab: `python colab/aeye_isolation_forest.py <data folder>`
+(needs `pandas` and `matplotlib`).
 
 ## Databases
 

@@ -12,68 +12,27 @@ from PySide6.QtGui import QImage
 
 from paths import HEAD_POSE_DIR, EVIDENCE_DIR
 from workers.head_pose import compute_head_pose
+# eye math + landmark numbers live in cheat/frame_features.py (no Qt), so the
+# Colab notebook that trains the Isolation Forest uses the exact same code
+from cheat.frame_features import (
+    RIGHT_IRIS_CENTER, LEFT_IRIS_CENTER, RIGHT_EYE_CORNERS, LEFT_EYE_CORNERS,
+    RIGHT_UPPER_LIDS, RIGHT_LOWER_LIDS, LEFT_UPPER_LIDS, LEFT_LOWER_LIDS,
+    SMOOTHING, FRAME_STEP_MS, _ema, _get_eye_data, _get_h_ratio, _get_v_ratio,
+)
 
 MODEL = HEAD_POSE_DIR / 'face_landmarker.task'
-
-RIGHT_IRIS_CENTER = 468
-LEFT_IRIS_CENTER = 473
-
-RIGHT_EYE_CORNERS = (33, 133)
-LEFT_EYE_CORNERS = (362, 263)
-
-RIGHT_UPPER_LIDS = [160, 159, 158]
-RIGHT_LOWER_LIDS = [144, 145, 153]
-LEFT_UPPER_LIDS = [385, 386, 387]
-LEFT_LOWER_LIDS = [380, 374, 373]
 
 H_LEFT_THRESH = 0.42
 H_RIGHT_THRESH = 0.58
 V_UP_THRESHOLD = 0.01
 V_DOWN_THRESHOLD = -0.01
 CALIB_FRAMES = 40
-SMOOTHING = 0.3
 HEAD_TH = 5
 
 # --- Cheat-detection tuning ---
 ALERT_SECONDS = 2.0      # a flag must persist this long before it counts
+USE_FOREST_FLAGS = True  # Isolation Forest "unusual" frames also count toward the 2-second flag
 FONT = cv2.FONT_HERSHEY_SIMPLEX
-
-
-def _ema(prev, new, alpha=SMOOTHING):
-    return prev * (1 - alpha) + new * alpha
-
-
-def _avg_val(landmarks, indices, axis, size):
-    vals = [getattr(landmarks[i], axis) * size for i in indices]
-    return np.mean(vals)
-
-
-def _get_eye_data(landmarks, corners_idx, upper_lids, lower_lids, img_w, img_h):
-    outer_x = landmarks[corners_idx[0]].x * img_w
-    inner_x = landmarks[corners_idx[1]].x * img_w
-    eye_width = inner_x - outer_x
-
-    upper_y = _avg_val(landmarks, upper_lids, 'y', img_h)
-    lower_y = _avg_val(landmarks, lower_lids, 'y', img_h)
-    eye_height = lower_y - upper_y
-
-    openness = eye_height / eye_width if eye_width != 0 else 0.3
-    return openness
-
-
-def _get_h_ratio(landmarks, pupil_px, corners_idx, img_w):
-    outer_x = landmarks[corners_idx[0]].x * img_w
-    inner_x = landmarks[corners_idx[1]].x * img_w
-    eye_width = inner_x - outer_x
-    return (pupil_px[0] - outer_x) / eye_width if eye_width != 0 else 0.5
-
-
-def _get_v_ratio(landmarks, iris_idx, corners_idx):
-    # Iris height above the eye corners (corners don't move with eyebrows). Bigger = looking up.
-    a, b = landmarks[corners_idx[0]], landmarks[corners_idx[1]]
-    eye_width = abs(b.x - a.x)
-    mid_y = (a.y + b.y) / 2
-    return (mid_y - landmarks[iris_idx].y) / eye_width if eye_width != 0 else 0.0
 
 
 def save_screenshot(frame, user, source):
@@ -163,11 +122,15 @@ class FrontCamWorker(QThread):
         # Cheat-detection state (only used when detect=True). Loads this
         # student's personal model; if none exists yet, detection stays off.
         self._detector = None
+        self._forest = None
         self._anom_since = None
         self._alert_active = False
         if self.detect:
             from cheat.cheat_detector import CheatDetector, FEATURES
             self._detector = CheatDetector.load(self.session_user_id)
+            # Isolation Forest from the Colab notebook: this student's, else the general one
+            from cheat.isolation_forest import IsolationModel
+            self._forest = IsolationModel.load(self.session_user_id)
 
         options = vision.FaceLandmarkerOptions(
             base_options=mp_python.BaseOptions(model_asset_path=str(MODEL)),
@@ -214,7 +177,7 @@ class FrontCamWorker(QThread):
             
             mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
             result = landmarker.detect_for_video(mp_img, timestamp_ms)
-            timestamp_ms += 33
+            timestamp_ms += FRAME_STEP_MS
 
             stats = {
                 'Gaze Direction': '--', 'H Ratio': '--', 'V Direction': '--',
@@ -343,23 +306,36 @@ class FrontCamWorker(QThread):
                         'face_pts': [(lm[i].x, lm[i].y) for i in (10, 152, 234, 454)],
                     }
 
-                    ready = self.detect and self._detector is not None and self._detector.ready
-                    if ready:
+                    hull_ready = self.detect and self._detector is not None and self._detector.ready
+                    forest_ready = self.detect and self._forest is not None
+                    ready = hull_ready or forest_ready
+                    off_screen = unusual = False
+                    texts = []
+                    if hull_ready:
                         # graham scan: are the eyes outside the screen area
                         off_screen = self._detector.outside(self._prev_h, self._prev_v)
                         feats['off_screen'] = off_screen   # for the red border
                         feats['gaze'] = self._detector.gaze([feats[f] for f in FEATURES])   # for the gaze circle
-                        text = 'OFF SCREEN' if off_screen else 'on screen'
-                        color = (0, 0, 255) if off_screen else (0, 255, 255)
-                        stats['Model'] = text   # e.g. 'on screen', shown in the video test window
+                        texts.append('OFF SCREEN' if off_screen else 'on screen')
+                    if forest_ready:
+                        # isolation forest: is this head pose + eye position unusual vs the normal videos
+                        score = self._forest.score([feats[f] for f in FEATURES])
+                        unusual = score > self._forest.threshold
+                        feats['forest_score'] = score
+                        feats['unusual'] = unusual
+                        texts.append(f"{'UNUSUAL' if unusual else 'usual'} ({score:.2f}/{self._forest.threshold:.2f})")
+                    if ready:
+                        text = ' - '.join(texts)
+                        color = (0, 0, 255) if (off_screen or unusual) else (0, 255, 255)
+                        stats['Model'] = text   # e.g. 'on screen - usual (0.45/0.58)', shown in the video test window
 
                         cv2.putText(frame, text, (10, 135), FONT, 0.7, color, 2)
 
                     self.features_ready.emit(feats)   # calibration collects these
 
-                    # flag if outside for 2 seconds
+                    # flag if outside the screen area (or unusual) for 2 seconds
                     if ready:
-                        suspicious = off_screen
+                        suspicious = off_screen or (USE_FOREST_FLAGS and unusual)
 
                         # video: count video time, so time spent paused doesn't add to the 2 seconds
                         now = video_sec if self.video_path else time.time()
@@ -378,7 +354,7 @@ class FrontCamWorker(QThread):
                             # MySQL gets one row per incident, not one per frame.
                             if not self._alert_active:
                                 self._alert_active = True
-                                reason = 'eyes off screen'
+                                reason = 'eyes off screen' if off_screen else 'unusual head/eye movement'
                                 self.cheat_detected.emit({
                                     'kind': 'start',
                                     'source': 'gaze',

@@ -35,11 +35,14 @@ class VideoTestWindow(QWidget):
         self.file_label = QLabel('No video chosen')
         row.addWidget(self.file_label, stretch=1)
 
-        # every student that has a trained screen area: models/screen_area_<user>.json
+        # every student with a screen area (models/screen_area_<user>.json) or an
+        # Isolation Forest from Colab (models/isolation_<name>.npz)
         row.addWidget(QLabel('Model of:'))
         self.user_box = QComboBox()
-        for model_file in sorted(MODELS_DIR.glob('screen_area_*.json')):
-            self.user_box.addItem(model_file.stem.removeprefix('screen_area_'))
+        names = {f.stem.removeprefix('screen_area_') for f in MODELS_DIR.glob('screen_area_*.json')}
+        names |= {f.stem.removeprefix('isolation_') for f in MODELS_DIR.glob('isolation_*.npz')}
+        for name in sorted(names):
+            self.user_box.addItem(name)
         row.addWidget(self.user_box)
         layout.addLayout(row)
 
