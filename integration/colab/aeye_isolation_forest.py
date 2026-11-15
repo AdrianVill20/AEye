@@ -351,7 +351,15 @@ if has_labels:
         accuracy=float(accuracy_score(y, p)), precision=float(precision_score(y, p, zero_division=0)),
         recall=float(recall_score(y, p, zero_division=0)), f1=float(f1_score(y, p, zero_division=0)))
 
-events = []           # one row per true cheating stretch
+def clock(sec):
+    """seconds -> 'mm:ss.s', e.g. 75.4 -> '01:15.4'"""
+    if sec is None or pd.isna(sec):
+        return ''
+    return f'{int(sec // 60):02d}:{sec % 60:04.1f}'
+
+
+events = []           # one row per true cheating episode
+flag_rows = []        # one row per flag the app would raise
 false_alarms, normal_minutes, flags_by_video = 0, 0.0, {}
 for video, df in test.groupby('video'):
     df = df.sort_values('t')
@@ -359,16 +367,29 @@ for video, df in test.groupby('video'):
     flags_by_video[video] = flags
     # back-to-back stretches (e.g. left then right, gap <= 1 s) are one cheating episode
     truth = []
+    has_label_col = 'label' in labels.columns
     for r in labels[labels.video == video].sort_values('start_s').itertuples():
+        what = str(r.label) if has_label_col and pd.notna(r.label) else 'cheating'
         if truth and r.start_s <= truth[-1][1] + 1:
             truth[-1][1] = max(truth[-1][1], r.end_s)
+            if what not in truth[-1][2]:
+                truth[-1][2].append(what)
         else:
-            truth.append([r.start_s, r.end_s])
+            truth.append([r.start_s, r.end_s, [what]])
     for tr in truth:
         hits = [f for f in flags if overlaps(f, tr)]
+        fired = hits[0][0] + ALERT_SECONDS if hits else None    # the moment the app raises the flag
         events.append({'video': video, 'start_s': tr[0], 'end_s': tr[1], 'seconds': tr[1] - tr[0],
-                       'caught': bool(hits),
-                       'delay_s': max(0.0, hits[0][0] + ALERT_SECONDS - tr[0]) if hits else None})
+                       'label': ' + '.join(tr[2]), 'caught': bool(hits),
+                       'caught_at_s': fired,
+                       'delay_s': max(0.0, fired - tr[0]) if hits else None})
+    for f in flags:
+        match = [tr for tr in truth if overlaps(f, tr)]
+        flag_rows.append({'video': video, 'unusual_from_s': f[0], 'flag_raised_s': f[0] + ALERT_SECONDS,
+                          'unusual_until_s': f[1], 'seconds': f[1] - f[0],
+                          'result': 'CHEATING' if match else 'false alarm',
+                          'labelled_cheating': ', '.join(f'{clock(m[0])}-{clock(m[1])} {" + ".join(m[2])}'
+                                                         for m in match)})
     false_alarms += sum(not any(overlaps(f, tr) for tr in truth) for f in flags)
     normal_minutes += (df.cheat == 0).sum() / max(1, len(df)) * (df.t.max() - df.t.min()) / 60
 events = pd.DataFrame(events)
@@ -391,10 +412,59 @@ if len(events):
     per_video['false_alarms'] = [sum(not any(overlaps(f, (e.start_s, e.end_s))
                                              for e in events[events.video == v].itertuples())
                                      for f in flags_by_video.get(v, [])) for v in per_video.index]
+    # frame-level numbers per video (comparable with one-video reports)
+    for v in per_video.index:
+        d = test[test.video == v]
+        if d.cheat.nunique() == 2:
+            per_video.loc[v, 'roc_auc'] = roc_auc_score(d.cheat, d.score)
+            per_video.loc[v, 'recall'] = recall_score(d.cheat, d.pred, zero_division=0)
+            per_video.loc[v, 'precision'] = precision_score(d.cheat, d.pred, zero_division=0)
+            per_video.loc[v, 'normal_frames_flagged'] = d[d.cheat == 0].pred.mean()
     print(per_video.round(2).to_string())
     events.to_csv(WORK / 'events.csv', index=False)     # every episode, caught or missed
 if not has_labels:
     print('\nNo labelled cheating in test/ - only false-alarm numbers are available.')
+
+# %% [markdown]
+# ### 6b. When was it caught?
+# **Flags** - every flag the app would raise (`ALERT_SECONDS` of unusual frames in a row):
+# when the unusual behaviour started, the moment the flag is raised, when it ended,
+# and whether it was real cheating (overlaps a labelled episode) or a false alarm.
+#
+# **Cheating episodes** - every labelled episode and the time it was caught (or MISSED).
+#
+# Times are `mm:ss.s` from the start of the video. Saved to `flags.csv` and `events.csv`.
+
+# %%
+flags_table = pd.DataFrame(flag_rows, columns=['video', 'unusual_from_s', 'flag_raised_s', 'unusual_until_s',
+                                               'seconds', 'result', 'labelled_cheating'])
+flags_table.to_csv(WORK / 'flags.csv', index=False)
+pd.set_option('display.max_colwidth', 70)
+
+for video in sorted(test.video.unique()):
+    fv = flags_table[flags_table.video == video]
+    ev = events[events.video == video] if len(events) else events
+    print(f'\n=============== {video} ===============')
+    print(f'{len(fv)} flags: {int((fv.result == "CHEATING").sum())} on cheating, '
+          f'{int((fv.result == "false alarm").sum())} false alarms')
+    if len(fv):
+        print(pd.DataFrame({
+            'unusual from': fv.unusual_from_s.map(clock),
+            'FLAG raised': fv.flag_raised_s.map(clock),
+            'until': fv.unusual_until_s.map(clock),
+            'seconds': fv.seconds.round(1),
+            'result': fv.result,
+            'labelled cheating it overlaps': fv.labelled_cheating,
+        }).to_string(index=False))
+    if len(ev):
+        print(f'\n{int(ev.caught.sum())} of {len(ev)} cheating episodes caught:')
+        print(pd.DataFrame({
+            'cheating from': ev.start_s.map(clock),
+            'to': ev.end_s.map(clock),
+            'what': ev.label,
+            'caught at': [clock(t) if c else 'MISSED' for t, c in zip(ev.caught_at_s, ev.caught)],
+            'delay (s)': ev.delay_s.round(1),
+        }).to_string(index=False))
 
 # %% [markdown]
 # ## 7. Graphs
@@ -666,6 +736,104 @@ ax.set_xticks(lc.frames, [f'{n:,}' for n in lc.frames], fontsize=8)
 ax.minorticks_off()
 ax.legend()
 save(fig, '9_cross_validation_learning_curve')
+
+# %% [markdown]
+# ## 8b. Compare with other forests (optional)
+# Put other trained forests (`.joblib`, e.g. a teammate's
+# `baseline_01_02_05_isolation_forest.joblib`) in `OUT_DIR/compare/`. Every model is
+# scored on the **same** cheating videos and the **same** 5 app features, two ways:
+#
+# - **its own cut-off** - what it does in the app as it is (`predict`)
+# - **same 5% false-alarm cut-off** - each model's cut-off set so 5% of the held-out
+#   normal frames are unusual, so only the forest itself is compared
+#
+# ROC AUC does not depend on any cut-off: it is the fairest single number.
+# Note: a model trained on the held-out normal video has an unfair advantage on
+# "held-out normal flagged".
+
+# %%
+def event_numbers(scores_by_row, unusual_by_row):
+    """Episodes caught (>= ALERT_SECONDS) and false-alarm flags per minute, with the 2-second rule."""
+    df = test[['video', 't', 'cheat']].copy()
+    df['pred'] = unusual_by_row.astype(int)
+    caught = total = fa = 0
+    minutes = 0.0
+    for video, d in df.groupby('video'):
+        d = d.sort_values('t')
+        flags = flag_intervals(d)
+        truth = []
+        for r in labels[labels.video == video].sort_values('start_s').itertuples():
+            if truth and r.start_s <= truth[-1][1] + 1:
+                truth[-1][1] = max(truth[-1][1], r.end_s)
+            else:
+                truth.append([r.start_s, r.end_s])
+        long_eps = [tr for tr in truth if tr[1] - tr[0] >= ALERT_SECONDS]
+        total += len(long_eps)
+        caught += sum(any(overlaps(f, tr) for f in flags) for tr in long_eps)
+        fa += sum(not any(overlaps(f, tr) for tr in truth) for f in flags)
+        minutes += (d.cheat == 0).sum() / max(1, len(d)) * (d.t.max() - d.t.min()) / 60
+    return caught / total if total else np.nan, fa / minutes if minutes else np.nan
+
+
+def compare_row(name, score_fn, own_unusual_fn):
+    s_test, s_val = score_fn(test), score_fn(val)
+    row = {'model': name, 'roc_auc': roc_auc_score(y, s_test), 'avg_precision': average_precision_score(y, s_test)}
+    cut = np.quantile(s_val, 1 - TARGET_FPR)                 # same 5% false-alarm rule for everyone
+    for tag, u_test, u_val in (('own', own_unusual_fn(test), own_unusual_fn(val)),
+                               ('5%', s_test > cut, s_val > cut)):
+        ep, fa = event_numbers(s_test, u_test)
+        row.update({f'{tag}: normal flagged': float(np.mean(u_val)),
+                    f'{tag}: recall': recall_score(y, u_test, zero_division=0),
+                    f'{tag}: precision': precision_score(y, u_test, zero_division=0),
+                    f'{tag}: F1': f1_score(y, u_test, zero_division=0),
+                    f'{tag}: episodes caught': ep, f'{tag}: false alarms/min': fa})
+    return row, s_test
+
+
+COMPARE_DIR = WORK / 'compare'
+COMPARE_DIR.mkdir(exist_ok=True)
+others = sorted(COMPARE_DIR.glob('*.joblib'))
+if has_labels and others:
+    import joblib, warnings
+    warnings.filterwarnings('ignore', message='X does not have valid feature names')
+    warnings.filterwarnings('ignore', message='X has feature names')
+
+    def as_input(model, df):
+        # models trained on a DataFrame want the column names; the others want plain numbers
+        return df[FEATURES] if hasattr(model, 'feature_names_in_') else df[FEATURES].to_numpy(float)
+
+    rows, curves = [], {}
+    row, curves[MODEL_NAME + ' (this notebook)'] = compare_row(
+        MODEL_NAME + ' (this notebook)', lambda d: anomaly(forest, d), lambda d: anomaly(forest, d) > threshold)
+    rows.append(row)
+    for path in others:
+        m = joblib.load(path)
+        info = (f"trees={getattr(m, 'n_estimators', '?')}, max_samples={getattr(m, 'max_samples', '?')}, "
+                f"contamination={getattr(m, 'contamination', '?')}")
+        print(f'{path.name}: {info}')
+        row, curves[path.stem] = compare_row(path.stem, lambda d, m=m: -m.score_samples(as_input(m, d)),
+                                             lambda d, m=m: m.predict(as_input(m, d)) == -1)
+        rows.append(row)
+    comparison = pd.DataFrame(rows).set_index('model')
+    comparison.to_csv(WORK / 'model_comparison.csv')
+    pd.set_option('display.width', 200)
+    print(comparison.T.round(3).to_string())
+    results['comparison'] = comparison.round(4).to_dict(orient='index')
+
+    palette = [NORMAL_C, CHEAT_C, VAL_C, '#eda100', '#6250d6']   # fixed order, never cycled
+    fig, ax = plt.subplots(figsize=(6.5, 5))
+    for (name, s_test), c in zip(curves.items(), palette):
+        fpr, tpr, _ = roc_curve(y, s_test)
+        ax.plot(fpr, tpr, color=c, label=f'{name} (AUC {roc_auc_score(y, s_test):.3f})')
+    ax.plot([0, 1], [0, 1], color=INK2, linestyle=':', linewidth=1, label='random guess')
+    ax.set(xlabel='false positive rate', ylabel='true positive rate', xlim=(0, 1), ylim=(0, 1.01),
+           title='Model comparison (same test videos)')
+    ax.legend(loc='lower right', fontsize=8)
+    save(fig, '10_model_comparison_roc')
+elif others:
+    print('Comparison needs labelled cheating in the test videos.')
+else:
+    print(f'No other models to compare. Put .joblib files in {COMPARE_DIR} to compare.')
 
 # %% [markdown]
 # ## 9. Export the model for the app

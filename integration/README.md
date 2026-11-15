@@ -129,7 +129,7 @@ videos, then flags frames that don't fit.
    skipped. Put `colab/labels.csv` in that folder too: the cheating times of the
    front videos, built from `cheat.txt` (it falls back to `cheat.txt` if missing).
 2. Upload `colab/AEye_Isolation_Forest.ipynb` to Colab and run all cells.
-   It writes the validation numbers (`report_general.json`, `events.csv`) and
+   It writes the validation numbers (`report_general.json`, `events.csv`, `flags.csv` with the time of every flag) and
    graphs (`figures/`) to `MyDrive/AEye_IF_output`: feature distributions, score distribution,
    ROC/PR curves, confusion matrix + caught cheating stretches, per-video
    timelines, threshold sweep, decision maps, feature importance,
