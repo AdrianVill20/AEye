@@ -38,6 +38,16 @@ HEAD_TH = 5
 ALERT_SECONDS = 2.0      # a flag must persist this long before it counts
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
+# --- Distance from the screen (iris size) ---
+# The iris is about 11.7 mm wide in almost every adult, so the smaller it looks
+# on camera, the further away the student is: distance = focal * 11.7 mm / iris px.
+RIGHT_IRIS_RING = (469, 470, 471, 472)   # 4 points around the right iris
+LEFT_IRIS_RING = (474, 475, 476, 477)    # 4 points around the left iris
+IRIS_MM = 11.7
+CAMERA_FOV_DEG = 60      # typical webcam side-to-side view; change it if distances look off
+FAR_CM = 80              # further than this = "too far from the monitor"
+FAR_SECONDS = 2.0        # must stay too far this long before the warning shows
+
 
 def _ema(prev, new, alpha=SMOOTHING):
     return prev * (1 - alpha) + new * alpha
@@ -74,6 +84,25 @@ def _get_v_ratio(landmarks, iris_idx, corners_idx):
     eye_width = abs(b.x - a.x)
     mid_y = (a.y + b.y) / 2
     return (mid_y - landmarks[iris_idx].y) / eye_width if eye_width != 0 else 0.0
+
+
+def _iris_px(landmarks, ring, img_w, img_h):
+    # Iris size in pixels. The ring has 2 pairs of opposite points (side-side, top-bottom);
+    # take the bigger one, because turning the head squashes the iris in one direction only.
+    pts = [(landmarks[i].x * img_w, landmarks[i].y * img_h) for i in ring]
+    side = np.hypot(pts[0][0] - pts[2][0], pts[0][1] - pts[2][1])
+    top = np.hypot(pts[1][0] - pts[3][0], pts[1][1] - pts[3][1])
+    return max(side, top)
+
+
+def distance_cm(landmarks, img_w, img_h):
+    # How far the face is from the camera, in cm (an estimate, about +-10 cm).
+    iris = (_iris_px(landmarks, RIGHT_IRIS_RING, img_w, img_h)
+            + _iris_px(landmarks, LEFT_IRIS_RING, img_w, img_h)) / 2
+    if iris <= 0:
+        return None
+    focal_px = (img_w / 2) / np.tan(np.radians(CAMERA_FOV_DEG / 2))
+    return focal_px * (IRIS_MM / 10) / iris
 
 
 def save_screenshot(frame, user, source):
@@ -160,6 +189,8 @@ class FrontCamWorker(QThread):
         self._prev_v = None
         self._calib_openness = []
         self._baseline = None
+        self._dist = None          # smoothed distance in cm
+        self._far_since = None     # when the student first went too far (None = close enough)
 
         # Cheat-detection state (only used when detect=True). Loads this
         # student's personal model; if none exists yet, detection stays off.
@@ -284,6 +315,24 @@ class FrontCamWorker(QThread):
                 stats['Gaze Direction'] = gaze_dir
                 stats['H Ratio'] = f'h={self._prev_h:.3f} open={r_open:.4f}/{l_open:.4f}'
                 stats['V Direction'] = v_dir
+
+                # --- Distance from the screen ---
+                dist = distance_cm(lm, w, h)
+                if dist is not None:
+                    self._dist = dist if self._dist is None else _ema(self._dist, dist)
+                    now = video_sec if self.video_path else time.time()
+                    if self._dist > FAR_CM:
+                        if self._far_since is None:
+                            self._far_since = now
+                        too_far = now - self._far_since >= FAR_SECONDS
+                    else:
+                        self._far_since = None
+                        too_far = False
+                    stats['Distance'] = f'{self._dist:.0f} cm'
+                    stats['Too Far'] = too_far
+                    cv2.putText(frame, stats['Distance'], (w - 120, 55), FONT, 0.6, (255, 255, 255), 2)
+                    if too_far:
+                        cv2.putText(frame, 'TOO FAR - MOVE CLOSER', (10, h - 55), FONT, 0.8, (0, 140, 255), 2)
 
                 color = (0, 255, 255)
                 cv2.putText(frame, f"Gaze: {h_dir} / {v_dir}", (10, 28), FONT, 0.7, color, 2)

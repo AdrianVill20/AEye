@@ -830,6 +830,14 @@ class DetectionView(QWidget):
         self._pause_shortcut.setContext(Qt.WidgetWithChildrenShortcut)   # P only works inside this view
         self._pause_shortcut.activated.connect(self._toggle_pause)
 
+        # Orange bar that tells the student to move closer (shown only while too far)
+        self.far_label = QLabel('You are too far from the monitor. Please move closer.')
+        self.far_label.setAlignment(Qt.AlignCenter)
+        self.far_label.setStyleSheet('background: #f97316; color: white; font-weight: bold;'
+                                     'font-size: 15px; padding: 8px; border-radius: 6px;')
+        self.far_label.hide()
+        layout.addWidget(self.far_label)
+
         self.status = QLabel('Idle. Press Start to begin tracking.')
         self.status.setStyleSheet('color: gray;')
         layout.addWidget(self.status)
@@ -891,6 +899,7 @@ class DetectionView(QWidget):
         self.front.frame_ready.connect(self._show_front)
         self.front.cheat_detected.connect(self._on_cheat)
         self.front.stats_ready.connect(self._update_matrix_label)
+        self.front.stats_ready.connect(self._update_far_warning)
 
         self.graph.set_user(user_id)
         self.front.features_ready.connect(self.graph.on_features)
@@ -946,6 +955,15 @@ class DetectionView(QWidget):
         text = m if m == '--' else '\n' + m
         self.matrix_label.setText(f'Head-pose matrix R (3×3):{text}')
 
+    def _update_far_warning(self, stats):
+        # stats['Too Far'] is True after 2 s further than FAR_CM (front_cam_worker.py)
+        if stats.get('Too Far'):
+            self.far_label.setText(f"You are too far from the monitor ({stats['Distance']}). "
+                                   'Please move closer.')
+            self.far_label.show()
+        else:
+            self.far_label.hide()
+
     def _toggle_pause(self):
         if self.front is None:
             return   # nothing running yet - nothing to pause
@@ -986,6 +1004,7 @@ class DetectionView(QWidget):
         self.status.setStyleSheet('color: gray;')
         self.status.setText('Stopped.')
         self.matrix_label.setText('Head-pose matrix R (3×3): --')
+        self.far_label.hide()
 
 
 class ExamView(QWidget):

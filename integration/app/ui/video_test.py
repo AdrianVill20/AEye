@@ -129,8 +129,10 @@ class VideoTestWindow(QWidget):
 
     def _show_stats(self, stats):
         # e.g. "Time 00:12.4  |  OFF SCREEN"
+        far = '  |  TOO FAR' if stats.get('Too Far') else ''
         self.last_line = (f"Time {stats.get('Video Time', '--')}  |  {stats.get('Model', '--')}"
-                          f"  |  Forest: {stats.get('Forest', '--')}")
+                          f"  |  Forest: {stats.get('Forest', '--')}"
+                          f"  |  Distance: {stats.get('Distance', '--')}{far}")
         self.status.setText(self.last_line)
 
     def _on_cheat(self, event):
