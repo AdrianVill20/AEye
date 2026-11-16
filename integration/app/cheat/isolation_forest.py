@@ -1,6 +1,10 @@
 # Isolation Forest trained in Colab on NORMAL exam videos (sessions 01, 02, 05).
 # One model for every student - it does not use calibration.
 import joblib
+import warnings
+
+# the order below comes from the model itself, so a list without column names is safe
+warnings.filterwarnings('ignore', message='X does not have valid feature names')
 
 from paths import MODELS_DIR
 
@@ -18,6 +22,6 @@ def load(path=None):
     return joblib.load(path)
 
 def is_unusual(forest, feats):
-    # feats = the app's feats dict for one frame; take the 5 numbers in the trained order
-    camera_frame = [[feats[name] for name in FEATURES]]
+    # take the features this model was trained on, in its own order (4 for no-roll, 5 for the others)
+    camera_frame = [[feats[name] for name in forest.feature_names_in_]]
     return forest.predict(camera_frame)[0] == -1     # -1 = unusual, 1 = normal

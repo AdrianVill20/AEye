@@ -363,6 +363,8 @@ class FrontCamWorker(QThread):
                     if self._forest is not None:
                         label = 'unusual' if isolation_forest.is_unusual(self._forest, feats) else 'usual'
                         stats['Forest'] = label
+                        camera_frame = [[feats[name] for name in self._forest.feature_names_in_]]
+                        print(f"   h_ratio={feats['h_ratio']:.3f}, v_openness={feats['v_openness']:.3f}, yaw={feats['yaw']:.1f}, pitch={feats['pitch']:.1f}, roll={feats['roll']:.1f}, score={self._forest.score_samples(camera_frame)[0]:.3f}, cutoff={self._forest.offset_:.3f} -> {label}")
                         cv2.putText(frame, f'Forest: {label}', (10, 160), FONT, 0.7, (0, 165, 255), 2)
                         
 
