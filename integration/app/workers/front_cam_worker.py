@@ -284,7 +284,9 @@ class FrontCamWorker(QThread):
                 stats['Gaze Direction'] = gaze_dir
                 stats['H Ratio'] = f'h={self._prev_h:.3f} open={r_open:.4f}/{l_open:.4f}'
                 stats['V Direction'] = v_dir
-
+                #
+                # stats['h_ratio'] = f'{self._prev_h:.3f}'
+                # stats['v_ratio'] = f'{self._prev_v:+.3f}'
                 color = (0, 255, 255)
                 cv2.putText(frame, f"Gaze: {h_dir} / {v_dir}", (10, 28), FONT, 0.7, color, 2)
                 if self._baseline is not None:
