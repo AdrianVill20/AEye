@@ -826,9 +826,9 @@ class DetectionView(QWidget):
         self.matrix_label.hide()   # the "Show matrix" checkbox turns it on
         layout.addWidget(self.matrix_label)
         #
-        self.ratio_label = QLabel('h_ratio: --   |   v_ratio: --')
-        self.ratio_label.setStyleSheet('font-size: 16px; font-weight: bold;')
-        layout.addWidget(self.ratio_label)
+        # self.ratio_label = QLabel('h_ratio: --   |   v_ratio: --')
+        # self.ratio_label.setStyleSheet('font-size: 16px; font-weight: bold;')
+        # layout.addWidget(self.ratio_label)
         #
         self._pause_shortcut = QShortcut(QKeySequence('P'), self)
         self._pause_shortcut.setContext(Qt.WidgetWithChildrenShortcut)   # P only works inside this view
@@ -896,7 +896,7 @@ class DetectionView(QWidget):
         self.front.cheat_detected.connect(self._on_cheat)
         self.front.stats_ready.connect(self._update_matrix_label)
         #
-        self.front.stats_ready.connect(self._update_ratio_label)
+        # self.front.stats_ready.connect(self._update_ratio_label)
         #
         self.graph.set_user(user_id)
         self.front.features_ready.connect(self.graph.on_features)
